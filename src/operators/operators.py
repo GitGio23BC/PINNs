@@ -1,5 +1,7 @@
 import torch
 
+from src.utils import check_tensor
+
 
 def damped_harmonic_residual(pinn, t_i, zeta, omega, scale_factor):
 
@@ -18,10 +20,20 @@ def damped_harmonic_residual(pinn, t_i, zeta, omega, scale_factor):
 
 
 def elastic_1d_residual(
-    pinn: torch.nn.Module, x: torch.Tensor, E: float, A: float, f0: float
-) -> tuple[torch.Tensor, torch.Tensor]:
+    pinn: torch.nn.Module,
+    x: torch.Tensor,
+    F: float | torch.Tensor,
+    A: float | torch.Tensor,
+    E: float | torch.Tensor,
+    f0: float | torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
-    u = pinn(x)
+    N = x.shape[0]
+    device = x.device
+    F = check_tensor(F, N, device)
+    A = check_tensor(A, N, device)
+
+    u = pinn(torch.cat([x, F, A], dim=-1))
     u_x = torch.autograd.grad(
         u, x, torch.ones_like(u), create_graph=True, retain_graph=True
     )[0]
@@ -30,7 +42,7 @@ def elastic_1d_residual(
     )[0]
 
     residual = E * A * u_xx + f0
-    return residual, u_x
+    return residual, u, u_x, u_xx
 
 
 OPERATOR_REGISTRY = {
