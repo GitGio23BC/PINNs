@@ -2,15 +2,22 @@ import torch
 
 
 def ic_loss(u_pred: torch.Tensor, u_exact: torch.Tensor) -> torch.Tensor:
-    return torch.mean((u_pred - u_exact) ** 2)
+    return mse(u_pred, u_exact)
 
 
 def bc_loss(u_bc_pred: torch.Tensor, g_bc: torch.Tensor) -> torch.Tensor:
-    return torch.mean((u_bc_pred - g_bc) ** 2)
+    return mse(u_bc_pred, g_bc)
 
 
 def r_loss(n: torch.Tensor) -> torch.Tensor:
-    return (n**2).mean()
+    return mse(n, torch.zeros_like(n))
+
+
+def mse(x_in: torch.Tensor, x_gt: torch.Tensor, mean: bool = True) -> torch.Tensor:
+    mse_tensor = (x_in - x_gt) ** 2
+    if mean:
+        mse_tensor = torch.mean(mse_tensor)
+    return mse_tensor
 
 
 def wr_loss(
