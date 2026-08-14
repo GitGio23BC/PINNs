@@ -1,5 +1,6 @@
 /desktop.ini
 /venv
+/export
 
 *.log
-*.png
+*.zip
