@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 import torch
 import yaml
 
-from src.loader import init_n_bound_data
-from src.loss import ic_loss
+from src.loader import test_data
+from src.loss import mse
 from src.models import ARCHITECTURE_REGISTRY
 from src.operators import OPERATOR_REGISTRY
 from src.utils import init_logging
@@ -38,31 +38,27 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
 
     try:
         pinn = ARCHITECTURE_REGISTRY[arch](
-        in_channels, hidden_layers, hidden_dim, out_class
-    ).to(device)
+            in_channels, hidden_layers, hidden_dim, out_class
+        ).to(device)
         pinn.load_state_dict(torch.load(model_path, map_location=device))
     except RuntimeError:
         pinn = ARCHITECTURE_REGISTRY["MLP"](
-                in_channels, hidden_layers, hidden_dim, out_class
-            ).to(device)
+            in_channels, hidden_layers, hidden_dim, out_class
+        ).to(device)
         pinn.load_state_dict(torch.load(model_path, map_location=device))
     pinn.eval()
     logger.info(f"Loaded trained {arch} model from {model_path}")
 
-    x_test, u_exact, eps_exact = init_n_bound_data(cfg, device)
+    # Physics Parameters
+    x_test, u_exact, ε_exact, F, A, E, f0 = test_data(cfg, device)
+
     x_test = x_test.clone().detach().requires_grad_(True)
 
-    # Physics Parameters
-    A = float(cfg["physics"]["parameters"]["area"])
-    E = float(cfg["physics"]["parameters"]["young"])
-    f0 = float(cfg["physics"]["parameters"]["int_force"])
-
-    u_pred = pinn(x_test)
     pde_operator = OPERATOR_REGISTRY[eq_name]
-    _, u_x_pred = pde_operator(pinn, x_test, E, A, f0)
+    _, u_pred, u_x_pred, _ = pde_operator(pinn, x_test, F, A, E, f0)
 
-    mse_u = ic_loss(u_pred, u_exact).item()
-    mse_ε = ic_loss(u_x_pred, eps_exact).item()
+    mse_u = mse(u_pred, u_exact).item()
+    mse_ε = mse(u_x_pred, ε_exact).item()
 
     logger.info(f"Test Set Displacement MSE: {mse_u:.6e}")
     logger.info(f"Test Set Strain MSE: {mse_ε:.6e}")
@@ -86,7 +82,7 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
     plt.subplot(1, 2, 2)
     plt.plot(
         x_np,
-        eps_exact.detach().cpu().numpy().flatten(),
+        ε_exact.detach().cpu().numpy().flatten(),
         "k--",
         label="Exact Strain",
         linewidth=2,

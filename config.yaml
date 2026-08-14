@@ -5,12 +5,20 @@ seed: 42
 output_dir: "./output"
 
 # ==========================================
+# GLOBAL PHYSICS CONSTANTS
+# ==========================================
+physics: &phys_constants
+  equation: elastic_1d_residual
+  young: 100.0
+  int_force: 2.0
+
+# ==========================================
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "elastic_1d_pinn_MCL"
-  architecture: "MMLP"
-  in_channels: 1
+  model_name: "elastic_1d_pinn_parametric"
+  architecture: "MLP"
+  in_channels: 3
   hidden_layers: 3
   hidden_dim: 32
   out_class: 1
@@ -26,50 +34,47 @@ data:
   normalisation: False
 
 synt:
-  period: [0.0, 1.0, 500]
+  domain: [0.0, 1.0, 500]
   parameters:
-    area: [0.0, 2.0, 500]
+    area: 2
     young: 100.0
-    ext_force: [0.0, 10.0, 100] 
+    ext_force: 10
     int_force: 2.0
   data_dir: "./data/synt"
 
 # ==========================================
-# TRAINING HYPERPARAMETERS
+# TRAINING CONFIGURATION
 # ==========================================
 training:
-  epochs: 3000
-  ramp_epochs: 1500
-  device: "cpu"  
-  lambda_ic: 1e1
-  lambda_bc: 1e1
-  lambda_r: 1
-  load_continuation: True
+  device: "cpu"
+  epochs: 5000
+  ramp_epochs: 3000
+  load_continuation: true
+  domain: [0.0, 1.0, 500]       
+  parameters:
+    <<: *phys_constants
+    area_range: [0.5, 2.0]      
+    ext_force_range: [0.0, 10.0]
+  loss_weights:
+    lambda_ic: 1e2
+    lambda_bc: 1e2
+    lambda_r: 1e1
 
 # ==========================================
-# OPTIMIZER & SCHEDULER
+# TESTING 
+# ==========================================
+testing:
+  device: "cpu" 
+  domain: [0.0, 1.0, 1000]     
+  parameters:
+    <<: *phys_constants
+    area: 1.5            
+    ext_force: 7.5
+
+# ==========================================
+# OPTIMIZER
 # ==========================================
 optimizer:
   name: "adam"                    
   lr: 0.001                        
   weight_decay: 0.0
-
-# ==========================================
-# PHYSISC
-# ==========================================
-physics:
-  equation: elastic_1d_residual
-  parameters:
-    area: 1.0
-    young: 100.0
-    ext_force: 10.0
-    int_force: 2.0
-
-# ==========================================
-# CHECKPOINTING & LOGGING
-# ==========================================
-logging:
-  log_interval: 100                
-  save_top_k: 3                    
-  checkpoint_dir: "./output/checkpoints"
-  use_wandb: false                

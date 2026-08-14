@@ -6,13 +6,13 @@ import torch
 def harmonic_generator(
     cfg: dict, save: bool = True
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    t0, tf, t_step = cfg["synt"]["period"]
+    t0, tf, t_step = cfg["synt"]["domain"]
     t = torch.linspace(t0, tf, t_step)
 
-    A = cfg["synt"]["amplitude"]
-    phi = cfg["synt"]["phase"]
-    omega = cfg["synt"]["damping_frequency"]
-    zeta = cfg["synt"]["damping_coefficient"]
+    A = cfg["synt"]["parameters"]["amplitude"]
+    phi = cfg["synt"]["parameters"]["phase"]
+    omega = cfg["synt"]["parameters"]["damping_frequency"]
+    zeta = cfg["synt"]["parameters"]["damping_coefficient"]
 
     if isinstance(A, (list, tuple)):
         ux = A[0] * torch.exp(-zeta[0] * t) * torch.cos(omega[0] * t + phi[0])

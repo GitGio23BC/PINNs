@@ -6,7 +6,7 @@ import torch
 def elastic_generator_basic(
     cfg: dict, save: bool = True
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    x0, L, x_step = cfg["synt"]["period"]
+    x0, L, x_step = cfg["synt"]["domain"]
     x = torch.linspace(x0, L, x_step)
 
     A = cfg["synt"]["parameters"]["area"]
@@ -28,7 +28,7 @@ def elastic_generator_basic(
 def elastic_generator(
     cfg: dict, save: bool = True
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    x0, L, x_step = cfg["synt"]["period"]
+    x0, L, x_step = cfg["synt"]["domain"]
     x = torch.linspace(x0, L, x_step)
 
     A = cfg["synt"]["parameters"]["area"]

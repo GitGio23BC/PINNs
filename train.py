@@ -74,7 +74,10 @@ if __name__ == "__main__":
         )
         raise KeyError("Operator error")
 
-    A, E, F_target, f0 = cfg["physics"]["parameters"].values()
+    A_min, A_max = cfg["training"]["parameters"]["area_range"]
+    E = cfg["training"]["parameters"]["young"]
+    F_min, F_max = cfg["training"]["parameters"]["ext_force_range"]
+    f0 = cfg["training"]["parameters"]["int_force"]
 
     x, u_real, ε_real = init_n_bound_data(cfg, device)
 
@@ -86,9 +89,9 @@ if __name__ == "__main__":
     n = OPERATOR_REGISTRY[eq_name]
 
     # Traning Parameters
-    λ_ic = float(cfg["training"]["lambda_ic"])
-    λ_bc = float(cfg["training"]["lambda_bc"])
-    λ_r = float(cfg["training"]["lambda_r"])
+    λ_ic = float(cfg["training"]["loss_weights"]["lambda_ic"])
+    λ_bc = float(cfg["training"]["loss_weights"]["lambda_bc"])
+    λ_r = float(cfg["training"]["loss_weights"]["lambda_r"])
     epochs = int(cfg["training"]["epochs"])
     ramp_epochs = int(cfg["training"]["ramp_epochs"])
     load_continuation = bool(cfg["training"]["load_continuation"])
@@ -104,21 +107,28 @@ if __name__ == "__main__":
         pinn.train()
         optimizer.zero_grad()
 
-        λ = min(1.0, epoch / ramp_epochs) if ramp_epochs > 0 and load_continuation else 1.0
-        F_curr = λ * F_target
+        A = A_min + (A_max - A_min) * torch.rand(1).item()
+        F = F_min + (F_max - F_min) * torch.rand(1).item()
+
+        λ = (
+            min(1.0, epoch / ramp_epochs)
+            if ramp_epochs > 0 and load_continuation
+            else 1.0
+        )
+        F_curr = λ * F
 
         x_hat = x_hat.clone().detach().requires_grad_(True)
 
-        pde_residual, u_x_pred = n(pinn, x_hat, E, A, f0)
-        u_pred = pinn(x_hat)
+        pde_residual, u_pred, u_x_pred, _ = n(pinn, x_hat, F_curr, A, E, f0)
 
         u_dirichlet_pred = u_pred[0]
         initial_u = torch.tensor([0.0], device=device)
         loss_Dirichlet = ic_loss(u_dirichlet_pred, initial_u)
 
         u_x_neumann_pred = u_x_pred[-1]
-        target_strain = torch.tensor([F_curr / (E * A)], device=device)
-        loss_Neumann = bc_loss(u_x_neumann_pred, target_strain)
+        loss_Neumann = bc_loss(
+            u_x_neumann_pred, torch.tensor([F_curr / (E * A)], device=device) # target ε
+        )
 
         loss_PDE = r_loss(pde_residual)
 
