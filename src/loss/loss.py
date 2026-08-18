@@ -20,6 +20,13 @@ def mse(x_in: torch.Tensor, x_gt: torch.Tensor, mean: bool = True) -> torch.Tens
     return mse_tensor
 
 
+def rmse(x_in: torch.Tensor, x_gt: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    num = torch.linalg.norm(x_in - x_gt, ord=2)
+    dnum = torch.linalg.norm(x_gt, ord=2) + eps
+
+    return num / dnum
+
+
 def wr_loss(
     time_residuals: list[torch.Tensor], eps: float
 ) -> tuple[torch.Tensor, torch.Tensor]:

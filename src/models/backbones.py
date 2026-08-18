@@ -66,8 +66,7 @@ class MMLP(nn.Module):
         out = self.output_layer(H)
         return out
 
-
-ARCHITECTURE_REGISTRY = {
+BACKBONE_REGISTRY = {
     "MLP": MLP,
     "MMLP": MMLP,
 }

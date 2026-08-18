@@ -5,9 +5,9 @@ import torch
 import yaml
 from torch.optim import Adam
 
-from src.loader import data_norm, init_n_bound_data
+from src.loader import init_n_bound_data
 from src.loss import bc_loss, ic_loss, r_loss
-from src.models import ARCHITECTURE_REGISTRY
+from src.models import BACKBONE_REGISTRY, ParametricPINN
 from src.operators import OPERATOR_REGISTRY
 from src.utils import CSVLogger, init_logging
 
@@ -47,17 +47,20 @@ if __name__ == "__main__":
     hidden_dim = cfg["model"]["hidden_dim"]
     out_class = cfg["model"]["out_class"]
     device = cfg["training"]["device"]
+    _, x_ref, _ = cfg["training"]["domain"]
+    _, F_ref = cfg["training"]["parameters"]["ext_force_range"]
+    _, A_ref = cfg["training"]["parameters"]["area_range"]
 
-    if arch not in ARCHITECTURE_REGISTRY:
+    if arch not in BACKBONE_REGISTRY:
         logger.error(
-            f"{arch} isn't available.\n Available architectures are: {', '.join(ARCHITECTURE_REGISTRY.keys())}"
+            f"{arch} isn't available.\n Available architectures are: {', '.join(BACKBONE_REGISTRY.keys())}"
         )
         raise KeyError("Architecture error")
 
-    pinn = ARCHITECTURE_REGISTRY[arch](
+    backbone = BACKBONE_REGISTRY[arch](
         in_channels, hidden_layers, hidden_dim, out_class
     )
-
+    pinn = ParametricPINN(backbone, x_ref, F_ref, A_ref)
     pinn.to(device)
 
     optimizer = Adam(
@@ -80,11 +83,6 @@ if __name__ == "__main__":
     f0 = cfg["training"]["parameters"]["int_force"]
 
     x, u_real, ε_real = init_n_bound_data(cfg, device)
-
-    if cfg["data"]["normalisation"]:
-        x_hat, scale_factor = data_norm(x)
-    else:
-        x_hat = x
 
     n = OPERATOR_REGISTRY[eq_name]
 
@@ -117,9 +115,8 @@ if __name__ == "__main__":
         )
         F_curr = λ * F
 
-        x_hat = x_hat.clone().detach().requires_grad_(True)
-
-        pde_residual, u_pred, u_x_pred, _ = n(pinn, x_hat, F_curr, A, E, f0)
+        x = x.clone().detach().requires_grad_(True)
+        pde_residual, u_pred, u_x_pred, _ = n(pinn, x, F_curr, A, E, f0)
 
         u_dirichlet_pred = u_pred[0]
         initial_u = torch.tensor([0.0], device=device)
@@ -127,7 +124,8 @@ if __name__ == "__main__":
 
         u_x_neumann_pred = u_x_pred[-1]
         loss_Neumann = bc_loss(
-            u_x_neumann_pred, torch.tensor([F_curr / (E * A)], device=device) # target ε
+            u_x_neumann_pred,
+            torch.tensor([F_curr / (E * A)], device=device),  # target ε
         )
 
         loss_PDE = r_loss(pde_residual)
@@ -137,7 +135,7 @@ if __name__ == "__main__":
         loss.backward()
         optimizer.step()
 
-        if epoch % (epochs / 10) == 0 or epoch == 1:
+        if epoch % (epochs // 10) == 0 or epoch == 1:
             logger.info(
                 f"Epoch {epoch:5d}/{epochs} | λ_force: {λ:.2f} | "
                 f"Total Loss: {loss.item():.6e} | PDE: {loss_PDE.item():.6e} | "

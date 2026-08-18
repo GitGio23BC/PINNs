@@ -1,5 +1,7 @@
-from .mlp import ARCHITECTURE_REGISTRY
+from .architectures import ParametricPINN
+from .backbones import BACKBONE_REGISTRY
 
 __all__ = [
-    "ARCHITECTURE_REGISTRY",
+    "BACKBONE_REGISTRY",
+    "ParametricPINN",
 ]

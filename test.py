@@ -6,8 +6,8 @@ import torch
 import yaml
 
 from src.loader import test_data
-from src.loss import mse
-from src.models import ARCHITECTURE_REGISTRY
+from src.loss import rmse
+from src.models import BACKBONE_REGISTRY, ParametricPINN
 from src.operators import OPERATOR_REGISTRY
 from src.utils import init_logging
 
@@ -36,16 +36,17 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
         logger.error(f"Model file not found at {model_path}. Train the model first.")
         raise FileNotFoundError("Model error")
 
-    try:
-        pinn = ARCHITECTURE_REGISTRY[arch](
+    if arch in BACKBONE_REGISTRY:
+        backbone = BACKBONE_REGISTRY[arch](
             in_channels, hidden_layers, hidden_dim, out_class
-        ).to(device)
+        )
+        pinn = ParametricPINN(backbone).to(device)
         pinn.load_state_dict(torch.load(model_path, map_location=device))
-    except RuntimeError:
-        pinn = ARCHITECTURE_REGISTRY["MLP"](
-            in_channels, hidden_layers, hidden_dim, out_class
-        ).to(device)
-        pinn.load_state_dict(torch.load(model_path, map_location=device))
+    else:
+        logger.error(
+            f"{arch} isn't available.\n Available architectures are: {', '.join(BACKBONE_REGISTRY.keys())}"
+        )
+        raise KeyError("Architecture error")
     pinn.eval()
     logger.info(f"Loaded trained {arch} model from {model_path}")
 
@@ -57,11 +58,11 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
     pde_operator = OPERATOR_REGISTRY[eq_name]
     _, u_pred, u_x_pred, _ = pde_operator(pinn, x_test, F, A, E, f0)
 
-    mse_u = mse(u_pred, u_exact).item()
-    mse_ε = mse(u_x_pred, ε_exact).item()
+    rmse_u = rmse(u_pred, u_exact).item()
+    rmse_ε = rmse(u_x_pred, ε_exact).item()
 
-    logger.info(f"Test Set Displacement MSE: {mse_u:.6e}")
-    logger.info(f"Test Set Strain MSE: {mse_ε:.6e}")
+    logger.info(f"Test Set Displacement rMSE: {rmse_u:.6e}")
+    logger.info(f"Test Set Strain rMSE: {rmse_ε:.6e}")
 
     # Plotting
     x_np = x_test.detach().cpu().numpy().flatten()
@@ -73,7 +74,7 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
     plt.subplot(1, 2, 1)
     plt.plot(x_np, u_exact_np, "k--", label="Exact Solution", linewidth=2)
     plt.plot(x_np, u_pred_np, "r-", label="PINN Prediction", linewidth=1.5)
-    plt.title(f"Displacement u(x) | MSE: {mse_u:.2e}")
+    plt.title(f"Displacement u(x) | rMSE: {rmse_u:.2e}")
     plt.xlabel("Position x")
     plt.ylabel("Displacement u")
     plt.legend()
@@ -94,7 +95,7 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
         label="PINN Strain",
         linewidth=1.5,
     )
-    plt.title(f"Strain du/dx | MSE: {mse_ε:.2e}")
+    plt.title(f"Strain du/dx | rMSE: {rmse_ε:.2e}")
     plt.xlabel("Position x")
     plt.ylabel("Strain ε")
     plt.legend()

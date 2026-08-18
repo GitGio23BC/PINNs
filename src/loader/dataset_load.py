@@ -6,14 +6,6 @@ from .elastic import elastic_generator
 from .harmonics import harmonic_generator  # noqa: F401
 
 
-def data_norm(data: torch.Tensor) -> tuple[torch.Tensor, float]:
-
-    scale = data.max() - data.min()
-    data = (data - data.min()) / scale
-
-    return data, scale.detach().item()
-
-
 def init_n_bound_data(
     cfg: dict, device: str | torch.device
 ) -> tuple[torch.Tensor, ...]:
@@ -37,7 +29,9 @@ def test_data(
     F = float(cfg["testing"]["parameters"]["ext_force"])
     f0 = float(cfg["testing"]["parameters"]["int_force"])
 
-    u_exact = (1.0 / (A * E)) * ((F + f0 * x_max) * x - (f0 / 2.0) * (x**2))
-    ε_exact = (1.0 / (A * E)) * ((F + f0 * x_max) - f0 * x)
+    _, L_physical, _ = cfg["training"]["domain"]
+
+    u_exact = (1.0 / (A * E)) * ((F + f0 * L_physical) * x - (f0 / 2.0) * (x**2))
+    ε_exact = (1.0 / (A * E)) * ((F + f0 * L_physical) - f0 * x)
 
     return x, u_exact, ε_exact, F, A, E, f0

@@ -31,10 +31,9 @@ data:
   data_dir: "./data/synt"
   batch_size: 64
   num_workers: 4                   
-  normalisation: False
 
 synt:
-  domain: [0.0, 1.0, 500]
+  domain: [0.0, 10.0, 1000]
   parameters:
     area: 2
     young: 100.0
@@ -50,14 +49,14 @@ training:
   epochs: 5000
   ramp_epochs: 3000
   load_continuation: true
-  domain: [0.0, 1.0, 500]       
+  domain: [0.0, 10.0, 1000]       
   parameters:
     <<: *phys_constants
     area_range: [0.5, 2.0]      
     ext_force_range: [0.0, 10.0]
   loss_weights:
-    lambda_ic: 1e2
-    lambda_bc: 1e2
+    lambda_ic: 1e3
+    lambda_bc: 1e3
     lambda_r: 1e1
 
 # ==========================================
@@ -65,11 +64,11 @@ training:
 # ==========================================
 testing:
   device: "cpu" 
-  domain: [0.0, 1.0, 1000]     
+  domain: [0.0, 2.0, 2000]     
   parameters:
     <<: *phys_constants
-    area: 1.5            
-    ext_force: 7.5
+    area: 0.5  
+    ext_force: 1
 
 # ==========================================
 # OPTIMIZER
