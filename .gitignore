@@ -1,10 +1,10 @@
 /desktop.ini
 /venv
 /export
-/output
-/data
+/output/checkpoints
+/__pycache__
 
 *.log
+*.pyc
 *.zip
-*.png
 
