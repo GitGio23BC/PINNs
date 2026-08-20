@@ -7,6 +7,7 @@ from torch.optim import Adam
 
 from src.loader import init_n_bound_data
 from src.loss import bc_loss, ic_loss, r_loss
+from src.loss.loss import mse
 from src.models import BACKBONE_REGISTRY, ParametricPINN
 from src.operators import OPERATOR_REGISTRY
 from src.utils import CSVLogger, init_logging
@@ -63,11 +64,19 @@ if __name__ == "__main__":
     pinn = ParametricPINN(backbone, x_ref, F_ref, A_ref)
     pinn.to(device)
 
-    optimizer = Adam(
+    E_learned = torch.nn.Parameter(
+        torch.tensor([1.0], requires_grad=True, device=device)
+    )
+    optimizer = Adam([
+    {"params": pinn.parameters(), "lr": float(cfg["optimizer"]["lr"])},
+    {"params": [E_learned], "lr": 1e-1}  # Faster parameter convergence
+])
+
+    """optimizer = Adam(
         pinn.parameters(),
         lr=cfg["optimizer"]["lr"],
         weight_decay=cfg["optimizer"]["weight_decay"],
-    )
+    )"""
 
     # Physics Parameters
     eq_name = cfg["physics"]["equation"]
@@ -116,7 +125,8 @@ if __name__ == "__main__":
         F_curr = λ * F
 
         x = x.clone().detach().requires_grad_(True)
-        pde_residual, u_pred, u_x_pred, _ = n(pinn, x, F_curr, A, E, f0)
+        pde_residual, u_pred, u_x_pred, _ = n(pinn, x, F_curr, A, E_learned, f0)
+        E_discovered = E_learned.item()
 
         u_dirichlet_pred = u_pred[0]
         initial_u = torch.tensor([0.0], device=device)
@@ -125,12 +135,21 @@ if __name__ == "__main__":
         u_x_neumann_pred = u_x_pred[-1]
         loss_Neumann = bc_loss(
             u_x_neumann_pred,
-            torch.tensor([F_curr / (E * A)], device=device),  # target ε
+            F_curr / (E_learned * A),  # target ε
         )
 
         loss_PDE = r_loss(pde_residual)
 
-        loss = λ_r * loss_PDE + λ_ic * loss_Dirichlet + λ_bc * loss_Neumann
+        idx_sensor = torch.randperm(len(x))[:100]
+        x_sensor = x[idx_sensor]
+        u_sensor = (
+            1 / (A * E) * ((F_curr + f0 * x_ref) * x_sensor - f0 / 2 * x_sensor**2)
+        ) + 0.01 * torch.rand_like(x_sensor)
+        u_sensor_pred = u_pred[idx_sensor]
+
+        loss_data = mse(u_sensor_pred, u_sensor)
+
+        loss = loss_data + λ_r * loss_PDE + λ_ic * loss_Dirichlet + λ_bc * loss_Neumann
 
         loss.backward()
         optimizer.step()
@@ -139,9 +158,16 @@ if __name__ == "__main__":
             logger.info(
                 f"Epoch {epoch:5d}/{epochs} | λ_force: {λ:.2f} | "
                 f"Total Loss: {loss.item():.6e} | PDE: {loss_PDE.item():.6e} | "
-                f"Dirichlet: {loss_Dirichlet.item():.6e} | Neumann: {loss_Neumann.item():.6e}"
+                f"Dirichlet: {loss_Dirichlet.item():.6e} | Neumann: {loss_Neumann.item():.6e}  | "
+                f"Discovered E: {E_discovered:.4f} Pa (True: {E:.4f} Pa)"
             )
-            torch.save(pinn.state_dict(), checkpoint_dir / f"{model_name}_{epoch}.pt")
+            torch.save(
+                {
+                    "model_state_dict": pinn.state_dict(),
+                    "E_learned": E_learned.item(),
+                },
+                checkpoint_dir / f"{model_name}_{epoch}.pt",
+            )
 
         metrics_logger.log(
             {
@@ -154,5 +180,11 @@ if __name__ == "__main__":
             }
         )
 
-    torch.save(pinn.state_dict(), out_dir / f"{model_name}.pt")
+    torch.save(
+        {
+            "model_state_dict": pinn.state_dict(),
+            "E_learned": E_learned.item(),
+        },
+        out_dir / f"{model_name}.pt",
+    )
     logger.info("Training ended and model saved.")

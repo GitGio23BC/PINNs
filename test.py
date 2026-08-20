@@ -41,12 +41,16 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
             in_channels, hidden_layers, hidden_dim, out_class
         )
         pinn = ParametricPINN(backbone).to(device)
-        pinn.load_state_dict(torch.load(model_path, map_location=device))
+        checkpoint = torch.load(model_path, map_location=device)
+        pinn.load_state_dict(checkpoint["model_state_dict"])
     else:
         logger.error(
             f"{arch} isn't available.\n Available architectures are: {', '.join(BACKBONE_REGISTRY.keys())}"
         )
         raise KeyError("Architecture error")
+
+    E_learned = checkpoint.get("E_learned", None)
+
     pinn.eval()
     logger.info(f"Loaded trained {arch} model from {model_path}")
 
@@ -55,8 +59,14 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
 
     x_test = x_test.clone().detach().requires_grad_(True)
 
+    if E_learned is not None:
+        rel_error_E = abs(E_learned - E) / E * 100.0
+        logger.info(f"True Young's Modulus (E_true):       {E:.4f}")
+        logger.info(f"Learned Young's Modulus (E_pred):    {E:.4f}")
+        logger.info(f"Parameter Relative Error:            {rel_error_E:.2f}%")
+
     pde_operator = OPERATOR_REGISTRY[eq_name]
-    _, u_pred, u_x_pred, _ = pde_operator(pinn, x_test, F, A, E, f0)
+    _, u_pred, u_x_pred, _ = pde_operator(pinn, x_test, F, A, E_learned, f0)
 
     rmse_u = rmse(u_pred, u_exact).item()
     rmse_ε = rmse(u_x_pred, ε_exact).item()

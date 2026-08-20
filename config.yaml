@@ -16,7 +16,7 @@ physics: &phys_constants
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "elastic_1d_pinn_parametric"
+  model_name: "elastic_1d_pinn_parametric_inverse"
   architecture: "MLP"
   in_channels: 3
   hidden_layers: 3
@@ -33,7 +33,7 @@ data:
   num_workers: 4                   
 
 synt:
-  domain: [0.0, 10.0, 1000]
+  domain: [0.0, 10.0, 5000]
   parameters:
     area: 2
     young: 100.0
@@ -49,7 +49,7 @@ training:
   epochs: 5000
   ramp_epochs: 3000
   load_continuation: true
-  domain: [0.0, 10.0, 1000]       
+  domain: [0.0, 10.0, 2000]       
   parameters:
     <<: *phys_constants
     area_range: [0.5, 2.0]      
@@ -64,10 +64,10 @@ training:
 # ==========================================
 testing:
   device: "cpu" 
-  domain: [0.0, 2.0, 2000]     
+  domain: [0.0, 10.0, 1000]     
   parameters:
     <<: *phys_constants
-    area: 0.5  
+    area: 1
     ext_force: 1
 
 # ==========================================
