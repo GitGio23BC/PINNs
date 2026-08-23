@@ -1,10 +1,21 @@
+# Windows
 /desktop.ini
-/venv
-/export
-/output/checkpoints
-/__pycache__
 
-*.log
+# Python virtual environments
+/venv/
+/.venv/
+
+# Python cache
+/__pycache__/
+**/__pycache__/
 *.pyc
-*.zip
+*.pyo
+*.pyd
 
+# Project output
+/export/
+/output/checkpoints/
+
+# Logs and archives
+*.log
+*.zip
