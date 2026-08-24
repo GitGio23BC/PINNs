@@ -14,7 +14,6 @@ from src.utils import CSVLogger, init_logging
 CONFIG_PATH = Path("config.yaml")
 
 if __name__ == "__main__":
-    # Log & Config
     init_logging()
     logger = logging.getLogger(__name__)
 
@@ -33,12 +32,11 @@ if __name__ == "__main__":
         ],
     )
 
-    # Folder structure
     out_dir = Path(cfg["output_dir"])
     checkpoint_dir = out_dir / "checkpoints" / cfg["model"]["model_name"]
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # Model COnfig
+    # Model Config
     model_name = cfg["model"]["model_name"]
     arch = cfg["model"]["architecture"]
     in_channels = cfg["model"]["in_channels"]
@@ -48,9 +46,7 @@ if __name__ == "__main__":
     device = cfg["training"]["device"]
 
     if arch not in BACKBONE_REGISTRY:
-        logger.error(
-            f"{arch} isn't available.\n Available architectures are: {', '.join(BACKBONE_REGISTRY.keys())}"
-        )
+        logger.error(f"{arch} isn't available.")
         raise KeyError("Architecture error")
 
     pinn = BACKBONE_REGISTRY[arch](in_channels, hidden_layers, hidden_dim, out_class)
@@ -60,23 +56,19 @@ if __name__ == "__main__":
 
     # Physics Parameters
     eq_name = cfg["physics"]["equation"]
-    k = cfg["physics"]["relaxation_modulus"]
-    c = cfg["physics"]["stress_scaling_factor"]
-    ct = cfg["physics"]["exponential_non_linearity"]
-    y = cfg["physics"]["stress"]
-    e0 = cfg["training"]["parameters"]["intial_strain"]
+    k = float(cfg["physics"]["relaxation_modulus"])
+    c = float(cfg["physics"]["stress_scaling_factor"])
+    c1, c2, c3 = [float(val) for val in cfg["physics"]["c_constants"]]
+    y = torch.tensor(cfg["physics"]["stress"], dtype=torch.float32, device=device)
 
     if eq_name not in OPERATOR_REGISTRY:
-        logger.error(
-            f"{eq_name} isn't available.\n Available operators are: {', '.join(OPERATOR_REGISTRY.keys())}"
-        )
+        logger.error(f"{eq_name} isn't available.")
         raise KeyError("Operator error")
 
     t = load_train_data(cfg, device)[0]
-
     n = OPERATOR_REGISTRY[eq_name]
 
-    # Traning Parameters
+    # Training Parameters
     λ_ic = float(cfg["training"]["loss_weights"]["lambda_ic"])
     λ_r = float(cfg["training"]["loss_weights"]["lambda_r"])
     epochs = int(cfg["training"]["epochs"])
@@ -87,27 +79,24 @@ if __name__ == "__main__":
         pinn.train()
         optimizer.zero_grad()
 
-        pde_residual, E = n(pinn, t, k, ct, c, y)
+        pde_residual, E = n(pinn, t, k, c1, c2, c3, c, y)
 
-        E_dirichlet_pred = E[0]
-        E0 = torch.tensor([float(e0)], device=device)
+        E_dirichlet_pred = E[0:1, :]
+        E0 = torch.zeros((1, 2), dtype=torch.float32, device=device)
         loss_Dirichlet = ic_loss(E_dirichlet_pred, E0)
 
         loss_PDE = r_loss(pde_residual)
-
-        # loss_data = mse(u_sensor_pred, u_sensor) # Maybe I can add also a data loss
-
-        loss = λ_r * loss_PDE + λ_ic * loss_Dirichlet  # + loss_data
+        loss = λ_r * loss_PDE + λ_ic * loss_Dirichlet
 
         loss.backward()
         optimizer.step()
 
         if epoch % (epochs // 10) == 0 or epoch == 1:
             logger.info(
-                f"Epoch {epoch:5d}/{epochs} |"
-                f"Total Loss: {loss.item():.6e} | PDE: {loss_PDE.item():.6e} | "
-                f"Dirichlet: {loss_Dirichlet.item():.6e} | Neumann: {None}  | "
-                f"Output E: {E[-1].item():.4f}"
+                f"Epoch {epoch:5d}/{epochs} | "
+                f"Total: {loss.item():.4e} | PDE: {loss_PDE.item():.4e} | "
+                f"IC: {loss_Dirichlet.item():.4e} | "
+                f"E_final: [{E[-1, 0].item():.4f}, {E[-1, 1].item():.4f}]"
             )
             torch.save(
                 pinn.state_dict(),
@@ -124,8 +113,5 @@ if __name__ == "__main__":
             }
         )
 
-    torch.save(
-        pinn.state_dict(),
-        out_dir / f"{model_name}.pt",
-    )
+    torch.save(pinn.state_dict(), out_dir / f"{model_name}.pt")
     logger.info("Training ended and model saved.")

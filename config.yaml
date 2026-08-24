@@ -8,17 +8,17 @@ output_dir: "./output"
 # GLOBAL PHYSICS CONSTANTS
 # ==========================================
 physics: &phys_constants
-  equation: viscoelastic_residual_Fung
-  "relaxation_modulus" : 15.0
-  "stress_scaling_factor": 0.88
-  "exponential_non_linearity": 13.0
-  "stress": 10.0
+  equation: "viscoelastic_residual_Fung_2D"
+  relaxation_modulus: 15.0
+  stress_scaling_factor: 0.88
+  c_constants: [13.0, 13.0, 0.0]     
+  stress: [15.0, 15.0]               
 
 # ==========================================
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "1d_pinn_viscoelastic"
+  model_name: "2d_pinn_viscoelastic"
   architecture: "MLP"
   in_channels: 1
   hidden_layers: 3
@@ -36,8 +36,6 @@ data:
 
 synt:
   domain: [0.0, 10.0, 5000]
-  parameters:
-    todo: 0.0
   data_dir: "./data/synt"
 
 # ==========================================
@@ -48,18 +46,11 @@ training:
   epochs: 5000
   parameters:
     <<: *phys_constants
-    intial_strain: 0
+    intial_strain: [0.0, 0.0]
   loss_weights:
     lambda_ic: 1e3
     lambda_bc: 1e3
     lambda_r: 1e1
-
-# ==========================================
-# TESTING 
-# ==========================================
-testing:
-  device: "cpu" 
-  todo: 0.0
 
 # ==========================================
 # OPTIMIZER

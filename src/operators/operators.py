@@ -97,3 +97,4 @@ OPERATOR_REGISTRY = {
     "viscoelastic_residual_Fung_1D": haslach_constitutive_evolution_1D,
     "viscoelastic_residual_Fung_2D": haslach_constitutive_evolution_2D,
 }
+ 
