@@ -53,14 +53,16 @@ def haslach_constitutive_evolution_2D(
     # E shape: (N, 2)
     E = pinn(t)
 
-    # 1. Compute time derivative dE/dt via autograd
-    E_t = torch.autograd.grad(
-        E,
-        t,
-        grad_outputs=torch.ones_like(E),
+    # Compute time derivative dE/dt via autograd
+    grad_E1, grad_E2 = torch.autograd.grad(
+        outputs=(E[:, 0], E[:, 1]),
+        inputs=(t, t),
+        grad_outputs=(torch.ones_like(E[:, 0]), torch.ones_like(E[:, 1])),
         create_graph=True,
         retain_graph=True,
-    )[0]
+    )
+
+    E_t = torch.cat([grad_E1, grad_E2], dim=-1)  # Shape: (N, 2)
 
     Q = torch.tensor([[c1, 0.5 * c3], [0.5 * c3, c2]], dtype=t.dtype, device=t.device)
     B = 2.0 * Q  # Shape: (2, 2) # Symmetic Q so Q+Q.T
@@ -97,4 +99,3 @@ OPERATOR_REGISTRY = {
     "viscoelastic_residual_Fung_1D": haslach_constitutive_evolution_1D,
     "viscoelastic_residual_Fung_2D": haslach_constitutive_evolution_2D,
 }
- 

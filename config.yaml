@@ -3,6 +3,7 @@
 # ==========================================
 seed: 42                           
 output_dir: "./output"
+bulk: False
 
 # ==========================================
 # GLOBAL PHYSICS CONSTANTS
@@ -50,7 +51,7 @@ training:
   loss_weights:
     lambda_ic: 1e3
     lambda_bc: 1e3
-    lambda_r: 1e1
+    lambda_r: 1e3
 
 # ==========================================
 # OPTIMIZER
