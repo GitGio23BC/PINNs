@@ -1,6 +1,9 @@
-import numpy as np
-import matplotlib.pyplot as plt
 from dataclasses import dataclass
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from src.mesh import create_mesh
 
 
 @dataclass
@@ -120,7 +123,7 @@ def plot_graph(graph):
     Visualize the graph structure.
     """
 
-    fig, ax = plt.subplots(figsize=(7, 7))
+    _fig, ax = plt.subplots(figsize=(7, 7))
 
     # ---------------------------------------------------------
     # Draw edges
@@ -184,8 +187,6 @@ def plot_graph(graph):
 # TEST
 # =============================================================
 if __name__ == "__main__":
-
-    from src.mesh.mesh import create_mesh
 
     mesh = create_mesh(
         width=1.0,

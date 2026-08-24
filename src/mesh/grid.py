@@ -1,6 +1,9 @@
-import numpy as np
-import matplotlib.pyplot as plt
 from dataclasses import dataclass
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from .mesh import create_mesh
 
 
 @dataclass
@@ -101,7 +104,7 @@ def plot_grid(grid):
     Plot the PINN points.
     """
 
-    fig, ax = plt.subplots(figsize=(7, 7))
+    _fig, ax = plt.subplots(figsize=(7, 7))
 
     # Interior points
     interior = grid.points[grid.interior_points]
@@ -146,9 +149,6 @@ def plot_grid(grid):
 # =============================================================
 
 if __name__ == "__main__":
-
-    # Import the mesh generator
-    from mesh import create_mesh
 
     # Create the mesh
     mesh = create_mesh(
