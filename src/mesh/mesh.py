@@ -1,10 +1,7 @@
-try:
-    import numpy as np
-except ImportError as exc:
-    raise ImportError(
-        "mesh.py requires NumPy. Install it with `python -m pip install numpy`."
-    ) from exc
 from dataclasses import dataclass
+
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 @dataclass
@@ -86,10 +83,7 @@ def create_mesh(width=1.0, height=1.0, nx=10, ny=10):
 
     X, Y = np.meshgrid(x, y)
 
-    nodes = np.column_stack([
-        X.ravel(),
-        Y.ravel()
-    ])
+    nodes = np.column_stack([X.ravel(), Y.ravel()])
 
     # ---------------------------------------------------------
     # 2. Generate triangular elements
@@ -99,7 +93,6 @@ def create_mesh(width=1.0, height=1.0, nx=10, ny=10):
 
     for j in range(ny):
         for i in range(nx):
-
             # Node indices of the current rectangular cell
             n0 = j * (nx + 1) + i
             n1 = n0 + 1
@@ -119,7 +112,6 @@ def create_mesh(width=1.0, height=1.0, nx=10, ny=10):
     edges = set()
 
     for triangle in elements:
-
         a, b, c = triangle
 
         edges.add(tuple(sorted((a, b))))
@@ -137,7 +129,6 @@ def create_mesh(width=1.0, height=1.0, nx=10, ny=10):
     tolerance = 1e-12
 
     for index, (x_coord, y_coord) in enumerate(nodes):
-
         on_left = abs(x_coord - 0.0) < tolerance
         on_right = abs(x_coord - width) < tolerance
         on_bottom = abs(y_coord - 0.0) < tolerance
@@ -153,10 +144,7 @@ def create_mesh(width=1.0, height=1.0, nx=10, ny=10):
     # ---------------------------------------------------------
 
     return Mesh(
-        nodes=nodes,
-        elements=elements,
-        edges=edges,
-        boundary_nodes=boundary_nodes
+        nodes=nodes, elements=elements, edges=edges, boundary_nodes=boundary_nodes
     )
 
 
@@ -164,54 +152,25 @@ def plot_mesh(mesh, show_nodes=True, show_node_indices=False):
     """
     Plot the triangular mesh.
     """
-    # Import lazily so mesh creation remains usable when the optional
-    # plotting dependency is not installed or is unavailable to the editor.
-    try:
-        import importlib
 
-        plt = importlib.import_module("matplotlib.pyplot")
-    except ImportError as exc:
-        raise ImportError(
-            "plot_mesh requires matplotlib to be installed"
-        ) from exc
-
-    fig, ax = plt.subplots(figsize=(7, 7))
+    _fig, ax = plt.subplots(figsize=(7, 7))
 
     # Draw triangular elements
     for triangle in mesh.elements:
-
         points = mesh.nodes[triangle]
 
-        polygon = np.vstack([
-            points,
-            points[0]
-        ])
+        polygon = np.vstack([points, points[0]])
 
-        ax.plot(
-            polygon[:, 0],
-            polygon[:, 1]
-        )
+        ax.plot(polygon[:, 0], polygon[:, 1])
 
     # Draw nodes
     if show_nodes:
-
-        ax.scatter(
-            mesh.nodes[:, 0],
-            mesh.nodes[:, 1],
-            s=20
-        )
+        ax.scatter(mesh.nodes[:, 0], mesh.nodes[:, 1], s=20)
 
     # Draw node indices
     if show_node_indices:
-
         for i, (x, y) in enumerate(mesh.nodes):
-
-            ax.text(
-                x,
-                y,
-                str(i),
-                fontsize=8
-            )
+            ax.text(x, y, str(i), fontsize=8)
 
     ax.set_aspect("equal")
 
@@ -235,13 +194,7 @@ def plot_mesh(mesh, show_nodes=True, show_node_indices=False):
 # =============================================================
 
 if __name__ == "__main__":
-
-    mesh = create_mesh(
-        width=1.0,
-        height=1.0,
-        nx=5,
-        ny=5
-    )
+    mesh = create_mesh(width=1.0, height=1.0, nx=5, ny=5)
 
     print("===== MESH INFORMATION =====")
 
@@ -262,8 +215,4 @@ if __name__ == "__main__":
     print("\nBoundary nodes:")
     print(mesh.boundary_nodes)
 
-    plot_mesh(
-        mesh,
-        show_nodes=True,
-        show_node_indices=True
-    )
+    plot_mesh(mesh, show_nodes=True, show_node_indices=True)
