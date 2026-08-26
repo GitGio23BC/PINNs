@@ -9,7 +9,7 @@ from src.loader import load_train_data
 from src.loss import ic_loss, r_loss
 from src.models import BACKBONE_REGISTRY
 from src.operators import OPERATOR_REGISTRY
-from src.utils import CSVLogger, init_logging
+from src.utils import CSVLogger, init_logging, set_seed
 
 CONFIG_PATH = Path("config.yaml")
 
@@ -31,7 +31,7 @@ if __name__ == "__main__":
             "loss_Neumann",
         ],
     )
-
+    set_seed(cfg["seed"])
     out_dir = Path(cfg["output_dir"])
     checkpoint_dir = out_dir / "checkpoints" / cfg["model"]["model_name"]
     checkpoint_dir.mkdir(parents=True, exist_ok=True)

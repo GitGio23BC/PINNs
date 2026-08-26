@@ -23,7 +23,7 @@ def haslach_constitutive_evolution_1D(
 
     exp_term = torch.exp(
         ct * E**2
-    )  # Note, this is only the exponential term of the psi
+    ) 
     psi_E = 2.0 * c * ct * E * exp_term  # dψ/dE
 
     H = 2.0 * c * ct * (1.0 + 2.0 * ct * E**2) * exp_term  # d²ψ/dE²
@@ -54,15 +54,23 @@ def haslach_constitutive_evolution_2D(
     E = pinn(t)
 
     # Compute time derivative dE/dt via autograd
-    grad_E1, grad_E2 = torch.autograd.grad(
-        outputs=(E[:, 0], E[:, 1]),
-        inputs=(t, t),
-        grad_outputs=(torch.ones_like(E[:, 0]), torch.ones_like(E[:, 1])),
+    grad_E1 = torch.autograd.grad(
+        outputs=E[:, 0],
+        inputs=t,
+        grad_outputs=torch.ones_like(E[:, 0]),
         create_graph=True,
         retain_graph=True,
-    )
+    )[0]
 
-    E_t = torch.cat([grad_E1, grad_E2], dim=-1)  # Shape: (N, 2)
+    grad_E2 = torch.autograd.grad(
+        outputs=E[:, 1],
+        inputs=t,
+        grad_outputs=torch.ones_like(E[:, 1]),
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+
+    E_t = torch.stack([grad_E1.squeeze(), grad_E2.squeeze()], dim=-1)  # Shape: (N, 2)
 
     Q = torch.tensor([[c1, 0.5 * c3], [0.5 * c3, c2]], dtype=t.dtype, device=t.device)
     B = 2.0 * Q  # Shape: (2, 2) # Symmetic Q so Q+Q.T
