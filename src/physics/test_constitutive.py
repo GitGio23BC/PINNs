@@ -1,7 +1,7 @@
 import numpy as np
 
-from .neo_hookean import NeoHookean
 from .mooney_rivlin import MooneyRivlin
+from .neo_hookean import NeoHookean
 
 
 def print_result(model, name, F):

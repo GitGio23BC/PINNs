@@ -1,41 +1,109 @@
 import torch
 
 
-def damped_harmonic_residual(pinn, t_i, zeta, omega):
-
-    u = pinn(t_i)
-    u_t = torch.autograd.grad(
-        u, t_i, torch.ones_like(u), create_graph=True, retain_graph=True
-    )[0]
-    u_tt = torch.autograd.grad(
-        u_t, t_i, torch.ones_like(u_t), create_graph=True, retain_graph=True
-    )[0]
-
-    return u_tt + 2 * zeta * omega * u_t + (omega**2) * u
-
-
-def elastic_1d_residual(
+def haslach_constitutive_evolution_1D(
     pinn: torch.nn.Module,
-    x: torch.Tensor,
-    F: float | torch.Tensor,
-    A: float | torch.Tensor,
-    E: float | torch.Tensor,
-    f0: float | torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    t: torch.Tensor,
+    k: float,
+    ct: float,
+    c: float,
+    y: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
 
-    u = pinn(x, F, A)
-    u_x = torch.autograd.grad(
-        u, x, torch.ones_like(u), create_graph=True, retain_graph=True
-    )[0]
-    u_xx = torch.autograd.grad(
-        u_x, x, torch.ones_like(u_x), create_graph=True, retain_graph=True
+    t.requires_grad_(True)
+
+    E = pinn(t)
+    E_t = torch.autograd.grad(
+        E,
+        t,
+        grad_outputs=torch.ones_like(E),
+        create_graph=True,
+        retain_graph=True,
     )[0]
 
-    residual = E * A * u_xx + f0
-    return residual, u, u_x, u_xx
+    exp_term = torch.exp(
+        ct * E**2
+    ) 
+    psi_E = 2.0 * c * ct * E * exp_term  # dψ/dE
+
+    H = 2.0 * c * ct * (1.0 + 2.0 * ct * E**2) * exp_term  # d²ψ/dE²
+
+    H_inv2 = 1.0 / (H**2)
+
+    residual = E_t - (-k * H_inv2 * (psi_E - y))
+    return residual, E
+
+
+import torch
+
+
+def haslach_constitutive_evolution_2D(
+    pinn: torch.nn.Module,
+    t: torch.Tensor,
+    k: float,
+    c1: float,
+    c2: float,
+    c3: float,
+    c: float,
+    y: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+
+    t.requires_grad_(True)
+
+    # E shape: (N, 2)
+    E = pinn(t)
+
+    # Compute time derivative dE/dt via autograd
+    grad_E1 = torch.autograd.grad(
+        outputs=E[:, 0],
+        inputs=t,
+        grad_outputs=torch.ones_like(E[:, 0]),
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+
+    grad_E2 = torch.autograd.grad(
+        outputs=E[:, 1],
+        inputs=t,
+        grad_outputs=torch.ones_like(E[:, 1]),
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+
+    E_t = torch.stack([grad_E1.squeeze(), grad_E2.squeeze()], dim=-1)  # Shape: (N, 2)
+
+    Q = torch.tensor([[c1, 0.5 * c3], [0.5 * c3, c2]], dtype=t.dtype, device=t.device)
+    B = 2.0 * Q  # Shape: (2, 2) # Symmetic Q so Q+Q.T
+
+    # Quadratic scalar per sample: s = E^T @ Q @ E -> Shape: (N, 1)
+    s = torch.einsum("bi,ij,bj->b", E, Q, E).unsqueeze(-1)
+    exp_s = c * torch.exp(s)  # Shape: (N, 1)
+
+    BE = torch.matmul(E, B)  # Shape: (N, 2)
+    grad_psi = exp_s * BE  # Shape: (N, 2)
+
+    # Hessian matrix per sample: H = c * exp(s) * [ B + BE ⊗ BE ]
+    # Shape: (N, 2, 1) x (N, 1, 2) -> (N, 2, 2)
+    BE_outer = torch.bmm(BE.unsqueeze(-1), BE.unsqueeze(1))
+    B_expanded = B.unsqueeze(0).expand_as(BE_outer)  # Shape: (N, 2, 2)
+
+    H = exp_s.unsqueeze(-1) * (B_expanded + BE_outer)  # Shape: (N, 2, 2)
+
+    H_inv = torch.linalg.inv(H)
+    H_inv2 = torch.bmm(H_inv, H_inv)  # Shape: (N, 2, 2)
+
+    if y.ndim == 1:
+        y = y.unsqueeze(0)  # Shape: (1, 2)
+    driving_force = (grad_psi - y).unsqueeze(-1)  # Shape: (N, 2, 1)
+
+    # Residual: E_t - (-k * H^-2 @ (grad_psi - y))
+    rhs = -k * torch.bmm(H_inv2, driving_force).squeeze(-1)  # Shape: (N, 2)
+    residual = E_t - rhs
+
+    return residual, E
 
 
 OPERATOR_REGISTRY = {
-    "damped_harmonic_oscillator": damped_harmonic_residual,
-    "elastic_1d_residual": elastic_1d_residual,
+    "viscoelastic_residual_Fung_1D": haslach_constitutive_evolution_1D,
+    "viscoelastic_residual_Fung_2D": haslach_constitutive_evolution_2D,
 }

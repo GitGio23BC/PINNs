@@ -3,42 +3,40 @@
 # ==========================================
 seed: 42                           
 output_dir: "./output"
+bulk: False
 
 # ==========================================
 # GLOBAL PHYSICS CONSTANTS
 # ==========================================
 physics: &phys_constants
-  equation: elastic_1d_residual
-  young: 100.0
-  int_force: 2.0
+  equation: "viscoelastic_residual_Fung_2D"
+  relaxation_modulus: 15.0
+  stress_scaling_factor: 0.88
+  c_constants: [13.0, 13.0, 0.0]     
+  stress: [15.0, 15.0]               
 
 # ==========================================
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "elastic_1d_pinn_parametric_inverse"
+  model_name: "2d_pinn_viscoelastic"
   architecture: "MLP"
-  in_channels: 3
+  in_channels: 1
   hidden_layers: 3
   hidden_dim: 32
-  out_class: 1
+  out_class: 2
 
 # ==========================================
 # DATA & DATA LOADING
 # ==========================================
 data:
-  dataset_name: "elastic_1d_data.pt"
+  dataset_name: "time_points.pt"
   data_dir: "./data/synt"
   batch_size: 64
   num_workers: 4                   
 
 synt:
   domain: [0.0, 10.0, 5000]
-  parameters:
-    area: 2
-    young: 100.0
-    ext_force: 10
-    int_force: 2.0
   data_dir: "./data/synt"
 
 # ==========================================
@@ -47,28 +45,13 @@ synt:
 training:
   device: "cpu"
   epochs: 5000
-  ramp_epochs: 3000
-  load_continuation: true
-  domain: [0.0, 10.0, 2000]       
   parameters:
     <<: *phys_constants
-    area_range: [0.5, 2.0]      
-    ext_force_range: [0.0, 10.0]
+    intial_strain: [0.0, 0.0]
   loss_weights:
     lambda_ic: 1e3
     lambda_bc: 1e3
-    lambda_r: 1e1
-
-# ==========================================
-# TESTING 
-# ==========================================
-testing:
-  device: "cpu" 
-  domain: [0.0, 10.0, 1000]     
-  parameters:
-    <<: *phys_constants
-    area: 1
-    ext_force: 1
+    lambda_r: 1e3
 
 # ==========================================
 # OPTIMIZER
