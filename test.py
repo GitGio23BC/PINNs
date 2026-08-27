@@ -24,10 +24,10 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
         cfg = yaml.safe_load(f)
 
     device = torch.device(cfg["training"]["device"])
-    in_channels = cfg["model"]["in_channels"] 
+    in_channels = cfg["model"]["in_channels"]
     hidden_layers = cfg["model"]["hidden_layers"]
     hidden_dim = cfg["model"]["hidden_dim"]
-    out_class = cfg["model"]["out_class"]      
+    out_class = cfg["model"]["out_class"]
     arch = cfg["model"]["architecture"]
     eq_name = cfg["physics"]["equation"]
 
@@ -68,13 +68,16 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
 
     n_pts = x_val.shape[0]
     b = torch.tensor(b_val, dtype=torch.float32, device=device).expand(n_pts, 2)
-    S = torch.tensor(s_val, dtype=torch.float32, device=device).expand(n_pts, len(s_val))
+    S = torch.tensor(s_val, dtype=torch.float32, device=device).expand(
+        n_pts, len(s_val)
+    )
 
     pde_operator = OPERATOR_REGISTRY[eq_name]
     u_pred, res_haslach, res_momentum = pde_operator(
         pinn, x_val, k, c1, c2, c3, c, b, S
     )
 
+    # Metrics
     mean_haslach_res = torch.mean(torch.abs(res_haslach)).item()
     mean_momentum_res = torch.mean(torch.abs(res_momentum)).item()
     max_ux = torch.max(torch.abs(u_pred[:, 0])).item()
@@ -88,8 +91,28 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
     logger.info(f"Peak Magnitude u_y:                  {max_uy:.6e}")
     logger.info("=" * 60)
 
-    # Visualization
-    _fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(19, 6))
+
+    numerical_summary = (
+        f"Evaluation Metrics [{model_path.name}]\n"
+        f"Constitutive Res (Mean): {mean_haslach_res:.4e}  |  "
+        f"Momentum Res (Mean): {mean_momentum_res:.4e}  |  "
+        f"Peak |u_x|: {max_ux:.4e}  |  "
+        f"Peak |u_y|: {max_uy:.4e}"
+    )
+    fig.suptitle(
+        numerical_summary,
+        fontsize=12,
+        fontweight="bold",
+        y=0.98,
+        bbox={
+            "boxstyle": "round,pad=0.5",
+            "facecolor": "whitesmoke",
+            "edgecolor": "gray",
+            "alpha": 0.9,
+        },
+    )
+
     x_np = x_val.detach().cpu().numpy()
     u_np = u_pred.detach().cpu().numpy()
     u_mag = (u_np[:, 0] ** 2 + u_np[:, 1] ** 2) ** 0.5
@@ -97,11 +120,25 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
     metrics_path = Path(cfg["output_dir"]) / "metrics.csv"
     if metrics_path.exists():
         df = pd.read_csv(metrics_path)
-        axes[0].plot(df["epoch"], df["total_loss"], "k-", label="Total Loss", linewidth=1.5)
+        axes[0].plot(
+            df["epoch"], df["total_loss"], "k-", label="Total Loss", linewidth=1.5
+        )
         if "loss_haslach" in df.columns:
-            axes[0].plot(df["epoch"], df["loss_haslach"], "r--", label="Constitutive Loss", alpha=0.7)
+            axes[0].plot(
+                df["epoch"],
+                df["loss_haslach"],
+                "r--",
+                label="Constitutive Loss",
+                alpha=0.7,
+            )
         if "loss_momentum" in df.columns:
-            axes[0].plot(df["epoch"], df["loss_momentum"], "b--", label="Momentum Loss", alpha=0.7)
+            axes[0].plot(
+                df["epoch"],
+                df["loss_momentum"],
+                "b--",
+                label="Momentum Loss",
+                alpha=0.7,
+            )
         if "loss_bc" in df.columns:
             axes[0].plot(df["epoch"], df["loss_bc"], "m:", label="BC Loss", alpha=0.7)
         axes[0].set_yscale("log")
@@ -121,7 +158,9 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
         s=35,
     )
     plt.colorbar(sc, ax=axes[1], label="||u|| Magnitude [m]")
-    axes[1].scatter(x_np[:, 0], x_np[:, 1], c="gray", alpha=0.2, s=10, label="Undeformed")
+    axes[1].scatter(
+        x_np[:, 0], x_np[:, 1], c="gray", alpha=0.2, s=10, label="Undeformed"
+    )
     axes[1].set_title("Static Deformed State")
     axes[1].set_xlabel("x")
     axes[1].set_ylabel("y")
@@ -136,7 +175,9 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
     axes[2].set_ylabel("Count (Log Scale)")
     axes[2].grid(True, alpha=0.3)
 
-    plt.tight_layout()
+    # Adjust top padding to accommodate the metric banner
+    plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
+
     plot_path = Path(cfg["output_dir"]) / f"{model_path.stem}_static_evaluation.png"
     plt.savefig(plot_path, dpi=300)
     logger.info(f"Saved evaluation plot to {plot_path}")

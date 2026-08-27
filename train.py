@@ -7,8 +7,8 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.loader import (
-    boundary_points,
-    train_points,
+    sample_boundary_points,
+    sample_collocation_points,
 )
 from src.loss import bc_loss, r_loss
 from src.models.backbones import BACKBONE_REGISTRY
@@ -72,13 +72,13 @@ if __name__ == "__main__":
     w_momentum = float(cfg["training"]["loss_weights"]["lambda_momentum"])
     w_bc = float(cfg["training"]["loss_weights"].get("lambda_bc", 10.0))
 
-    logger.info("Starting Training...")
+    logger.info("Starting Static 2D Continuum PINN Training...")
 
     for epoch in range(1, epochs + 1):
         pinn.train()
         optimizer.zero_grad()
 
-        x = boundary_points(cfg, device)
+        x = sample_collocation_points(cfg, device)
         if isinstance(x, tuple):
             x = x[0]
 
@@ -93,7 +93,7 @@ if __name__ == "__main__":
         loss_haslach = r_loss(res_haslach)
         loss_momentum = r_loss(res_momentum)
 
-        x_left, x_right, x_bottom, _ = boundary_points(cfg, device)
+        x_left, x_right, x_bottom, _ = sample_boundary_points(cfg, device)
         n_bc_segment = x_left.shape[0]
 
         u_left_pred = pinn(x_left)

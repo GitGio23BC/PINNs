@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 
 
-def train_points(cfg: dict, device: torch.device) -> torch.Tensor:
+def sample_collocation_points(cfg: dict, device: torch.device) -> torch.Tensor:
     n_pts = int(cfg["domain"]["n_collocation"])
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
@@ -15,7 +15,7 @@ def train_points(cfg: dict, device: torch.device) -> torch.Tensor:
     return x
 
 
-def initial_points(cfg: dict, device: torch.device) -> torch.Tensor:
+def sample_initial_points(cfg: dict, device: torch.device) -> torch.Tensor:
     n_ic = int(cfg["domain"]["n_ic"])
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
@@ -27,7 +27,7 @@ def initial_points(cfg: dict, device: torch.device) -> torch.Tensor:
     return x_ic
 
 
-def boundary_points(
+def sample_boundary_points(
     cfg: dict, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     n_bc = int(cfg["domain"]["n_bc"]) // 4
