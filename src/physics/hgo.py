@@ -1,10 +1,8 @@
 import numpy as np
-import torch
 
-from .constitutive import ConstitutiveModel, STrainEnergy
+from .constitutive import ConstitutiveModel
 
 
-# fmt: off
 class HGO(ConstitutiveModel):
     """
     Simplified Holzapfel-Gasser-Ogden (HGO)
@@ -272,85 +270,3 @@ class HGO(ConstitutiveModel):
             +
             P_fiber_b
         )
-
-# fmt: on
-
-
-class FungEnergy_1D(STrainEnergy):
-    def __init__(
-        self,
-        c: float,
-        c1: float,
-    ) -> None:
-
-        self.c = c
-        self.c1 = c1
-
-    def energy(self, E: torch.Tensor):
-        exp_E = torch.exp(self.c1 * E**2)
-        return self.c * (exp_E - 1)
-
-    def grad(self, E: torch.Tensor):
-        exp_E = torch.exp(self.c1 * E**2)
-        return 2.0 * self.c * self.c1 * E * exp_E
-
-    def hessian(self, E: torch.Tensor):
-        exp_E = torch.exp(self.c1 * E**2)
-        return 2.0 * self.c * self.c1 * (1 - 2.0 * self.c1 * E**2) * exp_E
-
-
-class FungEnergy_2D(STrainEnergy):
-    def __init__(
-        self,
-        c: float,
-        c1: float,
-        c2: float,
-        c3: float,
-    ) -> None:
-
-        self.c = c
-        self.c1 = c1
-
-    def energy(self, E: torch.Tensor) -> torch.Tensor:
-        exp_E = torch.exp(self.c1 * E**2)
-        return self.c * (exp_E - 1)
-
-    def grad(self, E: torch.Tensor) -> torch.Tensor:
-        exp_E = torch.exp(self.c1 * E**2)
-        return 2.0 * self.c * self.c1 * E * exp_E
-
-    def hessian(self, E: torch.Tensor) -> torch.Tensor:
-        exp_E = torch.exp(self.c1 * E**2)
-        return 2.0 * self.c * self.c1 * (1 - 2.0 * self.c1 * E**2) * exp_E
-
-
-class HUGO:
-    """
-    A Holzapfel-Gasser-Ogden (HGO) model.
-    It implements a very basic version assuming
-    isotropy.
-
-    The material consists of:
-
-        - 150 ml of Prosecco
-        - 20 ml of lemon balm or elderflower syrup
-        - seltzer or soda
-        - 1 slice of lemon or lime
-        - ice
-
-    Remember to decor with mint leaves.
-    """
-
-    def __init__(self, psi: STrainEnergy, k: float) -> None:
-        self.psi = psi
-        self.k = k
-
-    def haslach_equation(self, E: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
-
-        grad_psi = self.psi.grad(E)
-
-        H = self.psi.hessian(E)
-        H_inv = torch.linalg.inv(H)
-        H_inv2 = torch.bmm(H_inv, H_inv)
-
-        return -self.k * H_inv2 * (grad_psi - S)

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-class ViscoelasticResidualEq33(nn.Module):
+class Viscoelastic(nn.Module):
     """
     Calcola il residuo dell'Equazione 33 (Haslach et al.) usando una funzione 
     di energia Psi calcolata esternamente (es. Fung, HGO, Neo-Hooke, o Neural Network).

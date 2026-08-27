@@ -93,19 +93,14 @@ class STrainEnergy(ABC):
 
 class Material:
     def __init__(self, grad_u: torch.Tensor, S: torch.Tensor) -> None:
-
+        self.grad_u = grad_u
         self.S = S
 
-        self.grad_u = grad_u
+        d = grad_u.shape[-1]
+        self.I = torch.eye(d, device=grad_u.device, dtype=grad_u.dtype).unsqueeze(0)
 
         self.F = self.I + self.grad_u
-
         self.C = self.F.mT @ self.F
-
-        self.I = torch.eye(self.C.shape[-1], device=self.C.device, dtype=self.C.dtype)
-
         self.E = 0.5 * (self.C - self.I)
-
         self.P = self.F @ self.S
-
-        self.J = torch.det(self.F)
+        self.J = torch.linalg.det(self.F)

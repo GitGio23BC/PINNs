@@ -1,8 +1,10 @@
-from .dataset_load import load_train_data, test_data
+from .dataset_load import boundary_points, initial_points, load_test_data, train_points
 from .viscoelastic import time_points
 
 __all__ = [
-    "load_train_data",
-    "test_data",
+    "boundary_points",
+    "initial_points",
+    "load_test_data",
     "time_points",
+    "train_points",
 ]

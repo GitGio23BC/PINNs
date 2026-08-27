@@ -1,65 +1,82 @@
 from pathlib import Path
 
-import numpy as np
 import torch
-from scipy.integrate import solve_ivp
-
-from .viscoelastic import time_points, visco_elastic_ode
 
 
-def load_train_data(cfg: dict, device: str | torch.device) -> tuple[torch.Tensor, ...]:
-    data_path = Path(cfg["data"]["data_dir"]) / cfg["data"]["dataset_name"]
+def train_points(cfg: dict, device: torch.device) -> torch.Tensor:
+    n_pts = int(cfg["domain"]["n_collocation"])
+    x_min, x_max = cfg["domain"]["x_range"]
+    y_min, y_max = cfg["domain"]["y_range"]
 
-    if not data_path.exists():
-        time_points(cfg)
+    x_coords = torch.rand((n_pts, 1), device=device) * (x_max - x_min) + x_min
+    y_coords = torch.rand((n_pts, 1), device=device) * (y_max - y_min) + y_min
+    x = torch.cat([x_coords, y_coords], dim=-1)
 
-    data = torch.load(data_path, map_location=device)
-    return tuple(value for value in data.values())
+    return x
+
+
+def initial_points(cfg: dict, device: torch.device) -> torch.Tensor:
+    n_ic = int(cfg["domain"]["n_ic"])
+    x_min, x_max = cfg["domain"]["x_range"]
+    y_min, y_max = cfg["domain"]["y_range"]
+
+    x_coords = torch.rand((n_ic, 1), device=device) * (x_max - x_min) + x_min
+    y_coords = torch.rand((n_ic, 1), device=device) * (y_max - y_min) + y_min
+    x_ic = torch.cat([x_coords, y_coords], dim=-1)
+
+    return x_ic
+
+
+def boundary_points(
+    cfg: dict, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    n_bc = int(cfg["domain"]["n_bc"]) // 4
+    x_min, x_max = cfg["domain"]["x_range"]
+    y_min, y_max = cfg["domain"]["y_range"]
+
+    y_rand = torch.rand((n_bc, 1), device=device) * (y_max - y_min) + y_min
+    left = torch.cat([torch.full((n_bc, 1), x_min, device=device), y_rand], dim=-1)
+    right = torch.cat([torch.full((n_bc, 1), x_max, device=device), y_rand], dim=-1)
+
+    x_rand = torch.rand((n_bc, 1), device=device) * (x_max - x_min) + x_min
+    bottom = torch.cat([x_rand, torch.full((n_bc, 1), y_min, device=device)], dim=-1)
+    top = torch.cat([x_rand, torch.full((n_bc, 1), y_max, device=device)], dim=-1)
+
+    return left, right, bottom, top
 
 
 def generate_test_data(cfg: dict, save_path: Path) -> dict[str, torch.Tensor]:
-    k = float(cfg["physics"]["relaxation_modulus"])
-    c = float(cfg["physics"]["stress_scaling_factor"])
-    c1, c2, c3 = [float(v) for v in cfg["physics"]["c_constants"]]
-    y_vec = np.array(cfg["physics"]["stress"], dtype=np.float64)
-    e0 = cfg["training"]["parameters"].get("intial_strain", [0.0, 0.0])
+    x_min, x_max = cfg["domain"]["x_range"]
+    y_min, y_max = cfg["domain"]["y_range"]
+    t_min, t_max = cfg["domain"]["t_range"]
 
-    t0, T, t_step = cfg["synt"]["domain"]
-    t_eval_np = np.linspace(t0, T, int(t_step))
+    nx, ny, nt = 20, 20, 50
+    x_grid = torch.linspace(x_min, x_max, nx)
+    y_grid = torch.linspace(y_min, y_max, ny)
+    t_grid = torch.linspace(t_min, t_max, nt)
 
-    Q = np.array([[c1, 0.5 * c3], [0.5 * c3, c2]], dtype=np.float64)
-    B = 2.0 * Q
+    mesh_x, mesh_y, mesh_t = torch.meshgrid(x_grid, y_grid, t_grid, indexing="ij")
 
-    sol = solve_ivp(
-        visco_elastic_ode,
-        (t0, T),
-        list(e0),
-        args=(Q, B, k, c, y_vec),
-        t_eval=t_eval_np,
-        method="Radau",
-        rtol=1e-8,
-        atol=1e-10,
-    )
+    x_val = torch.stack([mesh_x.flatten(), mesh_y.flatten()], dim=-1)
+    t_val = mesh_t.flatten().unsqueeze(-1)
 
-    t_tensor = torch.tensor(t_eval_np, dtype=torch.float32).view(-1, 1)
-    E_exact_tensor = torch.tensor(sol.y.T, dtype=torch.float32)  # Shape: (N, 2)
+    val_data = {"x": x_val, "t": t_val}
 
-    data = {"t": t_tensor, "E_exact": E_exact_tensor}
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(data, save_path)
-    return data
+    torch.save(val_data, save_path)
+    return val_data
 
 
-def test_data(
-    cfg: dict, device: str | torch.device
+def load_test_data(
+    cfg: dict, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    test_file = Path(cfg["data"]["data_dir"]) / "ground_truth_2D.pt"
+    val_file = Path(cfg["data"]["data_dir"]) / "validation_grid_2D.pt"
 
-    if not test_file.exists():
-        data = generate_test_data(cfg, test_file)
+    if not val_file.exists():
+        data = generate_test_data(cfg, val_file)
     else:
-        data = torch.load(test_file, map_location=device)
+        data = torch.load(val_file, map_location=device)
 
-    t_test = data["t"].to(device)
-    E_exact = data["E_exact"].to(device)
-    return t_test, E_exact
+    x_val = data["x"].to(device)
+    t_val = data["t"].to(device)
+    return x_val, t_val
