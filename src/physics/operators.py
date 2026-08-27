@@ -3,10 +3,10 @@ import torch
 from src.utils import div, grad, voigt_tensor
 
 from .constitutive import Material
-from .neo_hookean import (
+from .equations import (
+    HUGO,
     FungEnergy_1D,
     FungEnergy_2D,
-    Viscoelastic,
     linear_momentum_balance,
 )
 
@@ -32,10 +32,10 @@ def haslach_constitutive_evolution_1D(
     P = body.P
     div_P = div(P, x)
 
-    costitutive_eq = Viscoelastic(FungEnergy_1D(c, c1), k)
-    haslach_residue = - costitutive_eq.haslach_equation(E, S)
+    costitutive_eq = HUGO(FungEnergy_1D(c, c1), k)
+    haslach_residue = -costitutive_eq.haslach_equation(E, S)
 
-    momentum_residue = - linear_momentum_balance(div_P, b)
+    momentum_residue = -linear_momentum_balance(div_P, b)
 
     return u, haslach_residue, momentum_residue
 
@@ -77,7 +77,7 @@ def haslach_constitutive_evolution_2D(
     P = body.P
     div_P = div(P, x)
 
-    costitutive_eq = Viscoelastic(FungEnergy_2D(c, c1, c2, c3), k)
+    costitutive_eq = HUGO(FungEnergy_2D(c, c1, c2, c3), k)
     haslach_residue = -costitutive_eq.haslach_equation(E, S_vec)
 
     momentum_residue = -linear_momentum_balance(div_P, b)
