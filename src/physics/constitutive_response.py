@@ -132,7 +132,7 @@ if __name__ == "__main__":
     # HGO material
     # ---------------------------------------------------------
 
-    from ..physics.hgo import HGO
+    from ..physics.elastic_model import HGO
 
     material = HGO(
         mu=10.0,
