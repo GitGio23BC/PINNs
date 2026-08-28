@@ -13,7 +13,6 @@ physics: &phys_constants
   relaxation_modulus: 15.0
   stress_scaling_factor: 0.88
   c_constants: [13.0, 13.0, 0.0]     
-  stress: [15.0, 15.0, 0.0]           
   density: 1.0                        
   body_force: [0.0, 0.0]              
 
@@ -49,16 +48,17 @@ domain:
 # ==========================================
 training:
   device: "cpu"
-  epochs: 500
+  epochs: 2000
+  lbfgs_epochs : 200
   loss_weights:
     lambda_haslach: 0
     lambda_momentum: 10
-    lambda_bc: 10
+    lambda_bc: 100
 
 # ==========================================
 # OPTIMIZER
 # ==========================================
 optimizer:
   name: "adam"                    
-  lr: 0.02                        
+  lr: 0.025                  
   weight_decay: 0.0

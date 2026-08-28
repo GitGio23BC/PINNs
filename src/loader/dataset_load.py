@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 
 
-def sample_collocation_points(cfg: dict, device: torch.device) -> torch.Tensor:
+def train_points(cfg: dict, device: torch.device) -> torch.Tensor:
     n_pts = int(cfg["domain"]["n_collocation"])
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
@@ -15,7 +15,7 @@ def sample_collocation_points(cfg: dict, device: torch.device) -> torch.Tensor:
     return x
 
 
-def sample_initial_points(cfg: dict, device: torch.device) -> torch.Tensor:
+def initial_points(cfg: dict, device: torch.device) -> torch.Tensor:
     n_ic = int(cfg["domain"]["n_ic"])
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
@@ -27,7 +27,7 @@ def sample_initial_points(cfg: dict, device: torch.device) -> torch.Tensor:
     return x_ic
 
 
-def sample_boundary_points(
+def boundary_points(
     cfg: dict, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     n_bc = int(cfg["domain"]["n_bc"]) // 4
@@ -48,28 +48,23 @@ def sample_boundary_points(
 def generate_test_data(cfg: dict, save_path: Path) -> dict[str, torch.Tensor]:
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
-    t_min, t_max = cfg["domain"]["t_range"]
 
-    nx, ny, nt = 20, 20, 50
+    nx, ny = 20, 20
     x_grid = torch.linspace(x_min, x_max, nx)
     y_grid = torch.linspace(y_min, y_max, ny)
-    t_grid = torch.linspace(t_min, t_max, nt)
 
-    mesh_x, mesh_y, mesh_t = torch.meshgrid(x_grid, y_grid, t_grid, indexing="ij")
+    mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing="ij")
 
     x_val = torch.stack([mesh_x.flatten(), mesh_y.flatten()], dim=-1)
-    t_val = mesh_t.flatten().unsqueeze(-1)
 
-    val_data = {"x": x_val, "t": t_val}
+    val_data = {"x": x_val}
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(val_data, save_path)
     return val_data
 
 
-def load_test_data(
-    cfg: dict, device: torch.device
-) -> tuple[torch.Tensor, torch.Tensor]:
+def load_test_data(cfg: dict, device: torch.device) -> torch.Tensor:
     val_file = Path(cfg["data"]["data_dir"]) / "validation_grid_2D.pt"
 
     if not val_file.exists():
@@ -78,5 +73,4 @@ def load_test_data(
         data = torch.load(val_file, map_location=device)
 
     x_val = data["x"].to(device)
-    t_val = data["t"].to(device)
-    return x_val, t_val
+    return x_val

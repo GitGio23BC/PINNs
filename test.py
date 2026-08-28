@@ -60,32 +60,30 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
     c = float(cfg["physics"]["stress_scaling_factor"])
     c1, c2, c3 = [float(v) for v in cfg["physics"]["c_constants"]]
     b_val = cfg["physics"].get("body_force", [0.0, 0.0])
-    s_val = cfg["physics"]["stress"]
+    #s_val = cfg["physics"]["stress"]
 
     x_val = load_test_data(cfg, device)
-    if isinstance(x_val, tuple):
-        x_val = x_val[0]
 
     n_pts = x_val.shape[0]
     b = torch.tensor(b_val, dtype=torch.float32, device=device).expand(n_pts, 2)
-    S = torch.tensor(s_val, dtype=torch.float32, device=device).expand(
-        n_pts, len(s_val)
-    )
+    #S = torch.tensor(s_val, dtype=torch.float32, device=device).expand(
+    #    n_pts, len(s_val)
+    #)
 
     pde_operator = OPERATOR_REGISTRY[eq_name]
-    u_pred, res_haslach, res_momentum = pde_operator(
-        pinn, x_val, k, c1, c2, c3, c, b, S
+    u_pred, _, res_momentum = pde_operator(
+        pinn, x_val, k, c1, c2, c3, c, b
     )
 
     # Metrics
-    mean_haslach_res = torch.mean(torch.abs(res_haslach)).item()
+    #mean_haslach_res = torch.mean(torch.abs(res_haslach)).item()
     mean_momentum_res = torch.mean(torch.abs(res_momentum)).item()
     max_ux = torch.max(torch.abs(u_pred[:, 0])).item()
     max_uy = torch.max(torch.abs(u_pred[:, 1])).item()
 
     logger.info("=" * 60)
     logger.info(f"Static Evaluation Results for: {model_path.name}")
-    logger.info(f"Mean Absolute Constitutive Residual: {mean_haslach_res:.6e}")
+    #logger.info(f"Mean Absolute Constitutive Residual: {mean_haslach_res:.6e}")
     logger.info(f"Mean Absolute Momentum Residual:     {mean_momentum_res:.6e}")
     logger.info(f"Peak Magnitude u_x:                  {max_ux:.6e}")
     logger.info(f"Peak Magnitude u_y:                  {max_uy:.6e}")
@@ -95,7 +93,7 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
 
     numerical_summary = (
         f"Evaluation Metrics [{model_path.name}]\n"
-        f"Constitutive Res (Mean): {mean_haslach_res:.4e}  |  "
+        #f"Constitutive Res (Mean): {mean_haslach_res:.4e}  |  "
         f"Momentum Res (Mean): {mean_momentum_res:.4e}  |  "
         f"Peak |u_x|: {max_ux:.4e}  |  "
         f"Peak |u_y|: {max_uy:.4e}"
@@ -175,7 +173,6 @@ def test(model_path: Path | None = None, config_path: Path = CONFIG_PATH):
     axes[2].set_ylabel("Count (Log Scale)")
     axes[2].grid(True, alpha=0.3)
 
-    # Adjust top padding to accommodate the metric banner
     plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
 
     plot_path = Path(cfg["output_dir"]) / f"{model_path.stem}_static_evaluation.png"
