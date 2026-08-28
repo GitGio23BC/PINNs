@@ -1,6 +1,6 @@
 import torch
 
-from src.utils import div, grad, voigt_tensor
+from src.utils import div, grad, voigt_to_tensor
 
 from .constitutive import Material
 from .equations import (
@@ -49,36 +49,25 @@ def haslach_constitutive_evolution_2D(
     c3: float,
     c: float,
     b: torch.Tensor,
-    S: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     x.requires_grad_(True)
-    if S.ndim == 3 and S.shape[-1] == 2:
-        S_tensor = S
-        S_vec = voigt_tensor(S, is_shear=False).unsqueeze(-1)
-    elif S.ndim == 2 and S.shape[-1] == 3:
-        S_vec = S.unsqueeze(-1)
-        S_tensor = torch.stack(
-            [
-                torch.stack([S[:, 0], S[:, 2]], dim=-1),
-                torch.stack([S[:, 2], S[:, 1]], dim=-1),
-            ],
-            dim=1,
-        )
-    else:
-        raise ValueError()
 
     u = pinn(x)
     grad_u = grad(u, x)
 
-    body = Material(grad_u, S_tensor)
+    energy_func = FungEnergy_2D(c, c1, c2, c3)
+    costitutive_eq = HUGO(energy_func, k)
 
+    body = Material(grad_u)
     E = body.E
-    P = body.P
+
+    S_vec = energy_func.grad(E)
+    S = voigt_to_tensor(S_vec)
+    P = body.compute_P(S)
     div_P = div(P, x)
 
-    costitutive_eq = HUGO(FungEnergy_2D(c, c1, c2, c3), k)
-    haslach_residue = -costitutive_eq.haslach_equation(E, S_vec)
+    haslach_residue = torch.zeros(S_vec.size()) #-costitutive_eq.haslach_equation(E, S_vec)
 
     momentum_residue = -linear_momentum_balance(div_P, b)
 

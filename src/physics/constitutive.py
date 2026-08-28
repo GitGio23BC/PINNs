@@ -92,7 +92,7 @@ class STrainEnergy(ABC):
 
 
 class Material:
-    def __init__(self, grad_u: torch.Tensor, S: torch.Tensor) -> None:
+    def __init__(self, grad_u: torch.Tensor, S: torch.Tensor | None = None) -> None:
         self.grad_u = grad_u
         self.S = S
 
@@ -102,5 +102,12 @@ class Material:
         self.F = self.I + self.grad_u
         self.C = self.F.mT @ self.F
         self.E = 0.5 * (self.C - self.I)
-        self.P = self.F @ self.S
         self.J = torch.linalg.det(self.F)
+
+        if self.S is not None:
+            self.compute_P(self.S)
+        
+    def compute_P(self, S: torch.Tensor):
+        self.S = S
+        self.P = self.F @ self.S
+        return self.P

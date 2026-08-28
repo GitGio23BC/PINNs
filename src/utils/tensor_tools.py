@@ -1,3 +1,5 @@
+import math
+
 import torch
 
 
@@ -27,24 +29,61 @@ def voigt_tensor(
     if x.shape[-1] != x.shape[-2]:
         raise ValueError("Square tensor needed")
 
-    n = x.shape[-1]
-    indices = [(i, i) for i in range(n)]
+    d = x.shape[-1]
 
-    for j in range(n - 1, 0, -1):
-        for i in range(j - 1, -1, -1):
-            indices.append((i, j))
+    diag_indices = [(i, i) for i in range(d)]
+    row_idx, col_idx = torch.triu_indices(d, d, offset=1)
+    off_diag_indices = list(zip(row_idx.tolist(), col_idx.tolist()))
+
+    all_indices = diag_indices + off_diag_indices
 
     voigt = torch.stack(
-        [x[..., i, j] for i, j in indices],
+        [x[..., i, j] for i, j in all_indices],
         dim=-1,
     )
 
     if is_shear:
-        diagonal = voigt[..., :n]
-        shear = 2.0 * voigt[..., n:]
+        diagonal = voigt[..., :d]
+        shear = 2.0 * voigt[..., d:]
         voigt = torch.cat((diagonal, shear), dim=-1)
 
     return voigt
+
+
+def voigt_to_tensor(
+    x_voigt: torch.Tensor,
+    is_shear: bool = False,
+) -> torch.Tensor:
+    if x_voigt.ndim < 2:
+        raise ValueError("Input must have at least two dimensions")
+
+    v = x_voigt.squeeze(-1) if x_voigt.ndim == 3 else x_voigt
+    N, n = v.shape
+
+    d = int((-1 + math.sqrt(1 + 8 * n)) / 2)
+
+    x = torch.zeros(
+        N,
+        d,
+        d,
+        dtype=v.dtype,
+        device=v.device,
+    )
+
+    diagonal = torch.arange(d, device=v.device)
+    x[:, diagonal, diagonal] = v[:, :d]
+
+    row_idx, col_idx = torch.triu_indices(d, d, offset=1, device=v.device)
+    shear = v[:, d:]
+
+    if is_shear:
+        x[:, row_idx, col_idx] = shear / 2.0
+        x[:, col_idx, row_idx] = shear / 2.0
+    else:
+        x[:, row_idx, col_idx] = shear
+        x[:, col_idx, row_idx] = shear
+
+    return x
 
 
 def div(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -64,7 +103,7 @@ def div(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
             row_div = row_div + dy_ij[:, j : j + 1]
         div_rows.append(row_div)
 
-    return torch.cat(div_rows, dim=-1)  
+    return torch.cat(div_rows, dim=-1)
 
 
 def grad(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -83,6 +122,7 @@ def grad(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
 
     return torch.stack(rows, dim=1)
 
+
 def d_dt(E: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     d = E.shape[-1]
     rows = []
@@ -95,7 +135,7 @@ def d_dt(E: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
                 grad_outputs=torch.ones_like(E[:, i, j]),
                 create_graph=True,
                 retain_graph=True,
-            )[0]  
+            )[0]
             cols.append(dE_ij_dt)
-        rows.append(torch.cat(cols, dim=-1)) 
-    return torch.stack(rows, dim=1) 
+        rows.append(torch.cat(cols, dim=-1))
+    return torch.stack(rows, dim=1)

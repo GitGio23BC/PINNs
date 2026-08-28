@@ -57,7 +57,7 @@ class FungEnergy_2D(STrainEnergy):
 
     def energy(self, E: torch.Tensor) -> torch.Tensor:
         self.Q = self.Q.to(device=E.device, dtype=E.dtype)
-        E_vec = voigt_tensor(E, is_shear=True).unsqueeze(-1)
+        E_vec = voigt_tensor(E).unsqueeze(-1)
 
         s = E_vec.mT @ self.Q @ E_vec
         exp_s = torch.exp(s)
@@ -66,7 +66,7 @@ class FungEnergy_2D(STrainEnergy):
 
     def grad(self, E: torch.Tensor) -> torch.Tensor:
         self.Q = self.Q.to(device=E.device, dtype=E.dtype)
-        E_vec = voigt_tensor(E, is_shear=True).unsqueeze(-1)
+        E_vec = voigt_tensor(E).unsqueeze(-1)
 
         B = 2 * self.Q  # self.Q + self.Q.mT
         s = E_vec.mT @ self.Q @ E_vec
@@ -76,7 +76,7 @@ class FungEnergy_2D(STrainEnergy):
 
     def hessian(self, E: torch.Tensor) -> torch.Tensor:
         self.Q = self.Q.to(device=E.device, dtype=E.dtype)
-        E_vec = voigt_tensor(E, is_shear=True).unsqueeze(-1)
+        E_vec = voigt_tensor(E).unsqueeze(-1)
 
         B = 2 * self.Q
         s = E_vec.mT @ self.Q @ E_vec
@@ -110,10 +110,10 @@ class HUGO:
         self.k = k
 
     def haslach_equation(self, E: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
-        grad_psi = self.psi.grad(E)
+        self.S = self.psi.grad(E)
         H = self.psi.hessian(E)
 
         H_inv = torch.linalg.inv(H) if H.shape[-1] != 1 else 1.0 / H
         H_inv2 = H_inv @ H_inv
 
-        return -self.k * (H_inv2 @ (grad_psi - S))
+        return -self.k * (H_inv2 @ (self.S - S))
