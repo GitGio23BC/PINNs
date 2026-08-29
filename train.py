@@ -4,13 +4,14 @@ from pathlib import Path
 import torch
 import yaml
 from torch.optim import Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from src.loader import init_n_bound_data
-from src.loss import bc_loss, ic_loss, r_loss
-from src.loss.loss import mse
-from src.models import BACKBONE_REGISTRY, ParametricPINN
-from src.operators import OPERATOR_REGISTRY
-from src.utils import CSVLogger, init_logging
+from src.loader import boundary_points, initial_points, train_points
+from src.loss import bc_loss, ic_loss, r_loss, traction_bc_loss
+from src.models.architectures import ParametricPINN
+from src.models.backbones import BACKBONE_REGISTRY
+from src.physics import OPERATOR_REGISTRY
+from src.utils import CSVLogger, init_logging, set_seed
 
 CONFIG_PATH = Path("config.yaml")
 
@@ -29,9 +30,10 @@ if __name__ == "__main__":
             "λ_force",
             "epoch",
             "total_loss",
-            "loss_PDE",
-            "loss_Dirichlet",
-            "loss_Neumann",
+            "loss_momentum",
+            "loss_bc",
+            "loss_ic",
+            "learning_rate",
         ],
     )
 
@@ -47,144 +49,107 @@ if __name__ == "__main__":
     hidden_layers = cfg["model"]["hidden_layers"]
     hidden_dim = cfg["model"]["hidden_dim"]
     out_class = cfg["model"]["out_class"]
-    device = cfg["training"]["device"]
-    _, x_ref, _ = cfg["training"]["domain"]
-    _, F_ref = cfg["training"]["parameters"]["ext_force_range"]
-    _, A_ref = cfg["training"]["parameters"]["area_range"]
-
-    if arch not in BACKBONE_REGISTRY:
-        logger.error(
-            f"{arch} isn't available.\n Available architectures are: {', '.join(BACKBONE_REGISTRY.keys())}"
-        )
-        raise KeyError("Architecture error")
 
     backbone = BACKBONE_REGISTRY[arch](
         in_channels, hidden_layers, hidden_dim, out_class
     )
-    pinn = ParametricPINN(backbone, x_ref, F_ref, A_ref)
-    pinn.to(device)
+    pinn = ParametricPINN(
+        backbone=backbone,
+        x_ref=cfg.get("domain", {}).get("x_range", 1.0)[-1],
+        t_ref=cfg.get("domain", {}).get("t_range", 1.0)[-1],
+        F_ref=cfg.get("domain", {}).get("F_range", 10.0)[-1],
+    ).to(device)
 
-    E_learned = torch.nn.Parameter(
-        torch.tensor([1.0], requires_grad=True, device=device)
-    )
-    optimizer = Adam([
-    {"params": pinn.parameters(), "lr": float(cfg["optimizer"]["lr"])},
-    {"params": [E_learned], "lr": 1e-1}  # Faster parameter convergence
-])
-
-    """optimizer = Adam(
-        pinn.parameters(),
-        lr=cfg["optimizer"]["lr"],
-        weight_decay=cfg["optimizer"]["weight_decay"],
-    )"""
-
-    # Physics Parameters
-    eq_name = cfg["physics"]["equation"]
-    if eq_name not in OPERATOR_REGISTRY:
-        logger.error(
-            f"{eq_name} isn't available.\n Available operators are: {', '.join(OPERATOR_REGISTRY.keys())}"
-        )
-        raise KeyError("Operator error")
-
-    A_min, A_max = cfg["training"]["parameters"]["area_range"]
-    E = cfg["training"]["parameters"]["young"]
-    F_min, F_max = cfg["training"]["parameters"]["ext_force_range"]
-    f0 = cfg["training"]["parameters"]["int_force"]
-
-    x, u_real, ε_real = init_n_bound_data(cfg, device)
-
-    n = OPERATOR_REGISTRY[eq_name]
-
-    # Traning Parameters
-    λ_ic = float(cfg["training"]["loss_weights"]["lambda_ic"])
-    λ_bc = float(cfg["training"]["loss_weights"]["lambda_bc"])
-    λ_r = float(cfg["training"]["loss_weights"]["lambda_r"])
+    optimizer = Adam(pinn.parameters(), lr=float(cfg["optimizer"]["lr"]))
     epochs = int(cfg["training"]["epochs"])
-    ramp_epochs = int(cfg["training"]["ramp_epochs"])
-    load_continuation = bool(cfg["training"]["load_continuation"])
+    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
 
-    s = (
-        "Starting Curriculum Training..."
-        if load_continuation
-        else "Starting Training..."
-    )
-    logger.info(s)
+    eq_name = cfg["physics"]["equation"]
+    k = float(cfg["physics"]["relaxation_modulus"])
+    c = float(cfg["physics"]["stress_scaling_factor"])
+    c1, c2, c3 = [float(val) for val in cfg["physics"]["c_constants"]]
+    b_val = cfg["physics"].get("body_force", [0.0, 0.0])
+
+    pde_operator = OPERATOR_REGISTRY[eq_name]
+
+    w_momentum = float(cfg["training"]["loss_weights"]["lambda_momentum"])
+    w_bc = float(cfg["training"]["loss_weights"]["lambda_bc"])
+    w_ic = float(cfg["training"]["loss_weights"]["lambda_ic"])
+
+    logger.info("Starting Parametric Temporal Training...")
 
     for epoch in range(epochs):
         pinn.train()
         optimizer.zero_grad()
 
-        A = A_min + (A_max - A_min) * torch.rand(1).item()
-        F = F_min + (F_max - F_min) * torch.rand(1).item()
+        # Domain Pass
+        x, t, F = train_points(cfg, device)
+        n_pts = x.shape[0]
+        b = torch.tensor(b_val, dtype=torch.float32, device=device).expand(n_pts, 2)
 
-        λ = (
-            min(1.0, epoch / ramp_epochs)
-            if ramp_epochs > 0 and load_continuation
-            else 1.0
+        u, P, res_momentum = pde_operator(pinn, x, t, F, k, c1, c2, c3, c, b)
+        loss_momentum = r_loss(res_momentum)
+
+        # Initial Condition
+        x_ic, t_ic, F_ic = initial_points(cfg, device)
+        u_ic_pred = pinn(x_ic, t_ic, F_ic)
+        loss_ic = ic_loss(u_ic_pred, torch.zeros_like(u_ic_pred))
+
+        # Boundary Conditions
+        left, right, bottom, top = boundary_points(cfg, device)
+        x_l, t_l, F_l = left
+        x_r, t_r, F_r = right
+        x_b, t_b, F_b = bottom
+        x_top, t_top, F_top = top
+
+        u_left_pred = pinn(x_l, t_l, F_l)
+        loss_bc_left = bc_loss(u_left_pred, torch.zeros_like(u_left_pred))
+
+        u_bottom_pred = pinn(x_b, t_b, F_b)
+        loss_bc_bottom = bc_loss(
+            u_bottom_pred[:, 1:2], torch.zeros_like(u_bottom_pred[:, 1:2])
         )
-        F_curr = λ * F
 
-        x = x.clone().detach().requires_grad_(True)
-        pde_residual, u_pred, u_x_pred, _ = n(pinn, x, F_curr, A, E_learned, f0)
-        E_discovered = E_learned.item()
-
-        u_dirichlet_pred = u_pred[0]
-        initial_u = torch.tensor([0.0], device=device)
-        loss_Dirichlet = ic_loss(u_dirichlet_pred, initial_u)
-
-        u_x_neumann_pred = u_x_pred[-1]
-        loss_Neumann = bc_loss(
-            u_x_neumann_pred,
-            F_curr / (E_learned * A),  # target ε
+        _, P_top, _ = pde_operator(
+            pinn, x_top, t_top, F_top, k, c1, c2, c3, c, torch.zeros_like(x_top)
         )
+        n_top = torch.tensor([0.0, 1.0], device=device).expand(x_top.shape[0], 2)
+        loss_bc_top = traction_bc_loss(P_top, n_top, torch.zeros_like(x_top))
 
-        loss_PDE = r_loss(pde_residual)
+        _, P_right, _ = pde_operator(
+            pinn, x_r, t_r, F_r, k, c1, c2, c3, c, torch.zeros_like(x_r)
+        )
+        n_right = torch.tensor([1.0, 0.0], device=device).expand(x_r.shape[0], 2)
+        traction_target_right = torch.cat([F_r, torch.zeros_like(F_r)], dim=-1)
+        loss_bc_right = traction_bc_loss(P_right, n_right, traction_target_right)
 
-        idx_sensor = torch.randperm(len(x))[:100]
-        x_sensor = x[idx_sensor]
-        u_sensor = (
-            1 / (A * E) * ((F_curr + f0 * x_ref) * x_sensor - f0 / 2 * x_sensor**2)
-        ) + 0.01 * torch.rand_like(x_sensor)
-        u_sensor_pred = u_pred[idx_sensor]
+        loss_bc = loss_bc_left + loss_bc_bottom + loss_bc_top + loss_bc_right
 
-        loss_data = mse(u_sensor_pred, u_sensor)
-
-        loss = loss_data + λ_r * loss_PDE + λ_ic * loss_Dirichlet + λ_bc * loss_Neumann
+        # Total Objective
+        loss = (w_momentum * loss_momentum) + (w_bc * loss_bc) + (w_ic * loss_ic)
 
         loss.backward()
         optimizer.step()
 
         if epoch % (epochs // 10) == 0 or epoch == 1:
             logger.info(
-                f"Epoch {epoch:5d}/{epochs} | λ_force: {λ:.2f} | "
-                f"Total Loss: {loss.item():.6e} | PDE: {loss_PDE.item():.6e} | "
-                f"Dirichlet: {loss_Dirichlet.item():.6e} | Neumann: {loss_Neumann.item():.6e}  | "
-                f"Discovered E: {E_discovered:.4f} Pa (True: {E:.4f} Pa)"
+                f"Epoch {epoch:5d}/{epochs} | "
+                f"Total: {loss.item():.4e} | "
+                f"Momentum: {loss_momentum.item():.4e} | "
+                f"BC: {loss_bc.item():.4e} | "
+                f"IC: {loss_ic.item():.4e}"
             )
-            torch.save(
-                {
-                    "model_state_dict": pinn.state_dict(),
-                    "E_learned": E_learned.item(),
-                },
-                checkpoint_dir / f"{model_name}_{epoch}.pt",
-            )
+
 
         metrics_logger.log(
             {
-                "λ_force": λ,
                 "epoch": epoch + 1,
                 "total_loss": loss.item(),
-                "loss_Dirichlet": loss_Dirichlet.item(),
-                "loss_Neumann": loss_Neumann.item(),
-                "loss_PDE": loss_PDE.item(),
+                "loss_momentum": loss_momentum.item(),
+                "loss_bc": loss_bc.item(),
+                "loss_ic": loss_ic.item(),
             }
         )
 
-    torch.save(
-        {
-            "model_state_dict": pinn.state_dict(),
-            "E_learned": E_learned.item(),
-        },
-        out_dir / f"{model_name}.pt",
-    )
-    logger.info("Training ended and model saved.")
+    torch.save(pinn.state_dict(), out_dir / f"{model_name}.pt")
+    logger.info("Parametric temporal PINN training completed and model saved.")

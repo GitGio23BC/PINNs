@@ -2,36 +2,75 @@ from pathlib import Path
 
 import torch
 
-from .elastic import elastic_generator
-from .harmonics import harmonic_generator  # noqa: F401
+
+def train_points(cfg: dict, device: torch.device) -> torch.Tensor:
+    n_pts = int(cfg["domain"]["n_collocation"])
+    x_min, x_max = cfg["domain"]["x_range"]
+    y_min, y_max = cfg["domain"]["y_range"]
+
+    x_coords = torch.rand((n_pts, 1), device=device) * (x_max - x_min) + x_min
+    y_coords = torch.rand((n_pts, 1), device=device) * (y_max - y_min) + y_min
+    x = torch.cat([x_coords, y_coords], dim=-1)
+
+    return x
 
 
-def init_n_bound_data(
-    cfg: dict, device: str | torch.device
-) -> tuple[torch.Tensor, ...]:
-    data_path = Path(cfg["data"]["data_dir"]) / cfg["data"]["dataset_name"]
+def initial_points(cfg: dict, device: torch.device) -> torch.Tensor:
+    n_ic = int(cfg["domain"]["n_ic"])
+    x_min, x_max = cfg["domain"]["x_range"]
+    y_min, y_max = cfg["domain"]["y_range"]
 
-    if not data_path.exists():
-        elastic_generator(cfg)
+    x_coords = torch.rand((n_ic, 1), device=device) * (x_max - x_min) + x_min
+    y_coords = torch.rand((n_ic, 1), device=device) * (y_max - y_min) + y_min
+    x_ic = torch.cat([x_coords, y_coords], dim=-1)
 
-    data = torch.load(data_path, map_location=device)
-
-    return tuple(value.unsqueeze(-1) for value in data.values())
+    return x_ic
 
 
-def test_data(
-    cfg: dict, device: str | torch.device
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float, float, float, float]:
-    x_min, x_max, x_points = cfg["testing"]["domain"]
-    x = torch.linspace(x_min, x_max, x_points, device=device).unsqueeze(-1)
-    A = float(cfg["testing"]["parameters"]["area"])
-    E = float(cfg["testing"]["parameters"]["young"])
-    F = float(cfg["testing"]["parameters"]["ext_force"])
-    f0 = float(cfg["testing"]["parameters"]["int_force"])
+def boundary_points(
+    cfg: dict, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    n_bc = int(cfg["domain"]["n_bc"]) // 4
+    x_min, x_max = cfg["domain"]["x_range"]
+    y_min, y_max = cfg["domain"]["y_range"]
 
-    _, L_physical, _ = cfg["training"]["domain"]
+    y_rand = torch.rand((n_bc, 1), device=device) * (y_max - y_min) + y_min
+    left = torch.cat([torch.full((n_bc, 1), x_min, device=device), y_rand], dim=-1)
+    right = torch.cat([torch.full((n_bc, 1), x_max, device=device), y_rand], dim=-1)
 
-    u_exact = (1.0 / (A * E)) * ((F + f0 * L_physical) * x - (f0 / 2.0) * (x**2))
-    ε_exact = (1.0 / (A * E)) * ((F + f0 * L_physical) - f0 * x)
+    x_rand = torch.rand((n_bc, 1), device=device) * (x_max - x_min) + x_min
+    bottom = torch.cat([x_rand, torch.full((n_bc, 1), y_min, device=device)], dim=-1)
+    top = torch.cat([x_rand, torch.full((n_bc, 1), y_max, device=device)], dim=-1)
 
-    return x, u_exact, ε_exact, F, A, E, f0
+    return left, right, bottom, top
+
+
+def generate_test_data(cfg: dict, save_path: Path) -> dict[str, torch.Tensor]:
+    x_min, x_max = cfg["domain"]["x_range"]
+    y_min, y_max = cfg["domain"]["y_range"]
+
+    nx, ny = 20, 20
+    x_grid = torch.linspace(x_min, x_max, nx)
+    y_grid = torch.linspace(y_min, y_max, ny)
+
+    mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing="ij")
+
+    x_val = torch.stack([mesh_x.flatten(), mesh_y.flatten()], dim=-1)
+
+    val_data = {"x": x_val}
+
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(val_data, save_path)
+    return val_data
+
+
+def load_test_data(cfg: dict, device: torch.device) -> torch.Tensor:
+    val_file = Path(cfg["data"]["data_dir"]) / "validation_grid_2D.pt"
+
+    if not val_file.exists():
+        data = generate_test_data(cfg, val_file)
+    else:
+        data = torch.load(val_file, map_location=device)
+
+    x_val = data["x"].to(device)
+    return x_val

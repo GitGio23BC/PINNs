@@ -18,10 +18,10 @@ physics: &phys_constants
 model:
   model_name: "elastic_1d_pinn_parametric_inverse"
   architecture: "MLP"
-  in_channels: 3
-  hidden_layers: 3
-  hidden_dim: 32
-  out_class: 1
+  in_channels: 4       
+  hidden_layers: 4
+  hidden_dim: 64
+  out_class: 2                        
 
 # ==========================================
 # DATA & DATA LOADING
@@ -32,43 +32,32 @@ data:
   batch_size: 64
   num_workers: 4                   
 
-synt:
-  domain: [0.0, 10.0, 5000]
-  parameters:
-    area: 2
-    young: 100.0
-    ext_force: 10
-    int_force: 2.0
-  data_dir: "./data/synt"
+domain:
+  x_range: [0.0, 2.0]
+  y_range: [0.0, 2.0]
+  t_range: [0.0, 2.0]
+  F_range: [0.0, 2.0]
+  n_collocation: 500
+  n_bc: 250
+  n_ic: 250
 
 # ==========================================
 # TRAINING CONFIGURATION
 # ==========================================
 training:
   device: "cpu"
-  epochs: 5000
-  ramp_epochs: 3000
-  load_continuation: true
-  domain: [0.0, 10.0, 2000]       
-  parameters:
-    <<: *phys_constants
-    area_range: [0.5, 2.0]      
-    ext_force_range: [0.0, 10.0]
+  epochs: 20000
+  lbfgs_epochs : 2000
   loss_weights:
-    lambda_ic: 1e3
-    lambda_bc: 1e3
-    lambda_r: 1e1
+    lambda_momentum: 10
+    lambda_ic: 10
+    lambda_bc: 100
 
-# ==========================================
-# TESTING 
-# ==========================================
-testing:
-  device: "cpu" 
-  domain: [0.0, 10.0, 1000]     
-  parameters:
-    <<: *phys_constants
-    area: 1
-    ext_force: 1
+test:
+  nx: 20
+  ny: 20
+  nt: 10
+  nF: 5
 
 # ==========================================
 # OPTIMIZER
