@@ -1,9 +1,6 @@
 import torch
-
 from src.utils import voigt_tensor
-
 from .constitutive import STrainEnergy
-
 
 def linear_momentum_balance(
     div_P: torch.Tensor,
@@ -11,29 +8,6 @@ def linear_momentum_balance(
 ) -> torch.Tensor:
 
     return div_P + b
-
-
-class FungEnergy_1D(STrainEnergy):
-    def __init__(
-        self,
-        c: float,
-        c1: float,
-    ) -> None:
-
-        self.c = c
-        self.c1 = c1
-
-    def energy(self, E: torch.Tensor):
-        exp_E = torch.exp(self.c1 * E**2)
-        return self.c * (exp_E - 1.0)
-
-    def grad(self, E: torch.Tensor):
-        exp_E = torch.exp(self.c1 * E**2)
-        return 2.0 * self.c * self.c1 * E * exp_E
-
-    def hessian(self, E: torch.Tensor):
-        exp_E = torch.exp(self.c1 * E**2)
-        return 2.0 * self.c * self.c1 * (1.0 + 2.0 * self.c1 * E**2) * exp_E
 
 
 class FungEnergy_2D(STrainEnergy):
@@ -87,7 +61,6 @@ class FungEnergy_2D(STrainEnergy):
 
         return exp_s * (B.expand_as(BE_outer) + BE_outer)
 
-
 class HUGO:
     """
     A Holzapfel-Gasser-Ogden (HGO) model.
@@ -117,3 +90,25 @@ class HUGO:
         H_inv2 = H_inv @ H_inv
 
         return -self.k * (H_inv2 @ (self.S - S))
+
+
+class Material:
+    def __init__(self, grad_u: torch.Tensor, S: torch.Tensor | None = None) -> None:
+        self.grad_u = grad_u
+        self.S = S
+
+        d = grad_u.shape[-1]
+        self.I = torch.eye(d, device=grad_u.device, dtype=grad_u.dtype).unsqueeze(0)
+
+        self.F = self.I + self.grad_u
+        self.C = self.F.mT @ self.F
+        self.E = 0.5 * (self.C - self.I)
+        self.J = torch.linalg.det(self.F)
+
+        if self.S is not None:
+            self.compute_P(self.S)
+        
+    def compute_P(self, S: torch.Tensor):
+        self.S = S
+        self.P = self.F @ self.S
+        return self.P

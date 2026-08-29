@@ -7,15 +7,12 @@ def mse(x_in: torch.Tensor, x_gt: torch.Tensor, mean: bool = True) -> torch.Tens
     return mse_tensor
 
 def ic_loss(u_pred: torch.Tensor, u_exact: torch.Tensor) -> torch.Tensor:
-    """Perdita sulle condizioni iniziali dello spostamento (ibrido o PINN)"""
     return mse(u_pred, u_exact)
 
 def bc_loss(u_bc_pred: torch.Tensor, g_bc: torch.Tensor) -> torch.Tensor:
-    """Perdita sulle condizioni al contorno dello spostamento (ibrido o PINN)"""
     return mse(u_bc_pred, g_bc)
 
 def r_loss(residual: torch.Tensor) -> torch.Tensor:
-    """Perdita fisica basata sul residuo di Haslach"""
     return mse(residual, torch.zeros_like(residual))
 
 def traction_bc_loss(P: torch.Tensor, n_normal: torch.Tensor, g_traction: torch.Tensor) -> torch.Tensor:

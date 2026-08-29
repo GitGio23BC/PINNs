@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
-import numpy as np
-
+import torch
 from src.mesh import create_mesh
 
 
@@ -39,10 +38,10 @@ class Graph:
         Shape: (2E,)
     """
 
-    nodes: np.ndarray
-    mesh_edges: np.ndarray
-    senders: np.ndarray
-    receivers: np.ndarray
+    nodes: torch.Tensor
+    mesh_edges: torch.Tensor
+    senders: torch.Tensor
+    receivers: torch.Tensor
 
     @property
     def n_nodes(self):
@@ -103,8 +102,8 @@ def create_graph(mesh):
         senders.append(node_b)
         receivers.append(node_a)
 
-    senders = np.array(senders, dtype=int)
-    receivers = np.array(receivers, dtype=int)
+    senders = torch.tensor(senders, dtype=torch.long)
+    receivers = torch.tensor(receivers, dtype=torch.long)
 
     # ---------------------------------------------------------
     # 4. Create Graph object
@@ -116,100 +115,3 @@ def create_graph(mesh):
         senders=senders,
         receivers=receivers
     )
-
-
-def plot_graph(graph):
-    """
-    Visualize the graph structure.
-    """
-
-    _fig, ax = plt.subplots(figsize=(7, 7))
-
-    # ---------------------------------------------------------
-    # Draw edges
-    # ---------------------------------------------------------
-
-    for sender, receiver in zip(
-        graph.senders,
-        graph.receivers
-    ):
-
-        start = graph.nodes[sender]
-        end = graph.nodes[receiver]
-
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            linewidth=0.8
-        )
-
-    # ---------------------------------------------------------
-    # Draw nodes
-    # ---------------------------------------------------------
-
-    ax.scatter(
-        graph.nodes[:, 0],
-        graph.nodes[:, 1],
-        s=30
-    )
-
-    # ---------------------------------------------------------
-    # Node labels
-    # ---------------------------------------------------------
-
-    for i, (x, y) in enumerate(graph.nodes):
-
-        ax.text(
-            x,
-            y,
-            str(i),
-            fontsize=8
-        )
-
-    ax.set_aspect("equal")
-
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-
-    ax.set_title(
-        f"Mesh Graph | "
-        f"Nodes: {graph.n_nodes} | "
-        f"Mesh edges: {graph.n_mesh_edges} | "
-        f"Directed edges: {graph.n_directed_edges}"
-    )
-
-    ax.grid(True)
-
-    plt.show()
-
-
-# =============================================================
-# TEST
-# =============================================================
-if __name__ == "__main__":
-
-    mesh = create_mesh(
-        width=1.0,
-        height=1.0,
-        nx=5,
-        ny=5
-    )
-
-    graph = create_graph(mesh)
-
-    print("===== GRAPH INFORMATION =====")
-
-    print(f"Number of nodes: {graph.n_nodes}")
-    print(f"Number of mesh edges: {graph.n_mesh_edges}")
-    print(f"Number of directed edges: {graph.n_directed_edges}")
-
-    print("\nFirst mesh edges:")
-    print(graph.mesh_edges[:10])
-
-    print("\nFirst senders:")
-    print(graph.senders[:10])
-
-    print("\nFirst receivers:")
-    print(graph.receivers[:10])
-
-    plot_graph(graph)

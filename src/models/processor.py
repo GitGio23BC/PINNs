@@ -3,7 +3,7 @@ import torch.nn as nn
 from src.models.message_passing import MessagePassingBlock
 
 
-class MeshGraphNetProcessor(nn.Module):
+class Processor(nn.Module):
     """
     Processor della pipeline MeshGraphNet.
 
