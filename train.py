@@ -1,207 +1,129 @@
+import torch
+import numpy as np
+import yaml
 import logging
 from pathlib import Path
+from torch.optim import Adam
 
-import torch
-import yaml
-from torch.optim import LBFGS, Adam
-from torch.optim.lr_scheduler import CosineAnnealingLR
+# Import dei moduli della mesh e del grafo (Cartelle src.mesh e src.graph)
+from src.mesh.mesh import create_mesh
+from src.graph.graph import create_graph
 
-from src.loader import (
-    boundary_points,
-    train_points,
-)
-from src.loss import bc_loss, r_loss
-from src.models.backbones import BACKBONE_REGISTRY
-from src.physics import OPERATOR_REGISTRY
-from src.utils import CSVLogger, init_logging, set_seed
+# Import dei moduli GNN (Cartella src.models)
+from src.models.encoder import Encoder
+from src.models.processor import MeshGraphNetProcessor
+from src.models.decoder import Decoder
+from src.models.backbones import MLP
 
-CONFIG_PATH = Path("config.yaml")
+# Import dei modelli PINN e loss (Cartella src.physics)
+from src.physics.operators import haslach_constitutive_evolution_2D
+from src.physics.loss import bc_loss, r_loss, mse
+
+# Configurazione del logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class HybridDisplacementModel(torch.nn.Module):
+    """
+    Modello Coordinatore Ibrido: PINN (continua) + MeshGraphNet (discreto).
+    Risolve il problema del campionamento valutando la PINN direttamente sui nodi materiali X.
+    """
+    def __init__(self, pinn_backbone, mgn_encoder, mgn_processor, mgn_decoder):
+        super().__init__()
+        self.pinn = pinn_backbone
+        self.encoder = mgn_encoder
+        self.processor = mgn_processor
+        self.decoder = mgn_decoder
+
+    def forward(self, X, senders, receivers, node_features, edge_features):
+        # 1. Spostamento Continuo della PINN valutato sui nodi materiali X della mesh
+        u_pinn = self.pinn(X)
+        
+        # 2. Aggiorniamo le feature del nodo includendo lo stato fisico predetto dalla PINN
+        node_features_hybrid = torch.cat([node_features, u_pinn], dim=-1)
+        
+        # 3. Flusso GNN: Encode -> Process (Message Passing) -> Decode
+        latent_nodes, latent_edges = self.encoder(node_features_hybrid, edge_features)
+        updated_nodes, _ = self.processor(latent_nodes, latent_edges, senders, receivers)
+        delta_u_mgn = self.decoder(updated_nodes)
+        
+        # 4. Spostamento ibrido finale coordinato
+        u_final = u_pinn + delta_u_mgn
+        
+        return u_pinn, delta_u_mgn, u_final
+
+def train_hybrid_model():
+    # 1. Generazione della mesh e della connettività del grafo
+    mesh = create_mesh(width=1.0, height=1.0, nx=5, ny=5)
+    graph = create_graph(mesh)
+    
+    # IMPORTANTE: attiviamo requires_grad=True per abilitare l'autodifferenziazione spaziale
+    X_nodes = torch.tensor(mesh.nodes, dtype=torch.float32).requires_grad_(True)
+    
+    senders = torch.tensor(graph.senders, dtype=torch.long)
+    receivers = torch.tensor(graph.receivers, dtype=torch.long)
+    
+    # Feature del grafo di input
+    node_features = torch.randn(X_nodes.shape[0], 1) # Feature strutturali di base
+    edge_features = torch.randn(senders.shape[0], 6) # Distanze e orientamenti degli archi
+    
+    # Spostamento Ground Truth FEM per l'addestramento data-driven
+    # Sganciato (.detach()) dal grafo computazionale di X_nodes per evitare il RuntimeError su epoche successive
+    u_ground_truth = (torch.sin(X_nodes * np.pi) * 0.1).detach()
+    
+    # 2. Inizializzazione dei sottomodelli
+    # PINN Backbone (Input: coordinate 2D X, Output: spostamenti 2D)
+    pinn_backbone = MLP(in_dim=2, hidden_layers=4, hidden_dim=64, out_dim=2)
+    
+    # MeshGraphNet (La feature del nodo in ingresso è pari a: node_features(1) + u_pinn(2) = 3)
+    mgn_encoder = Encoder(node_input_dim=3, edge_input_dim=6, latent_dim=32, hidden_dim=64)
+    
+    # Processor: accetta node_feature_dim=32 e edge_feature_dim=32 e hidden_dim=64
+    mgn_processor = MeshGraphNetProcessor(node_feature_dim=32, edge_feature_dim=32, hidden_dim=64)
+    
+    # Il Decoder accetta latent_dim=64 (hidden_dim del Processor)
+    mgn_decoder = Decoder(latent_dim=64, hidden_dim=64, output_dim=2)
+    
+    # Modello Ibrido Coordinatore
+    hybrid_model = HybridDisplacementModel(pinn_backbone, mgn_encoder, mgn_processor, mgn_decoder)
+    
+    # Ottimizzatore congiunto
+    optimizer = Adam(hybrid_model.parameters(), lr=1e-3)
+    
+    logger.info("Inizio addestramento congiunto Hybrid PINN + GNN...")
+    
+    for epoch in range(100):
+        optimizer.zero_grad()
+        
+        # Forward pass ibrido
+        u_pinn, delta_u_mgn, u_final = hybrid_model(
+            X_nodes, senders, receivers, node_features, edge_features
+        )
+        
+        # 3. Calcolo delle Perdite
+        loss_data = mse(u_final, u_ground_truth)
+        
+        # Loss Fisica (Modello Viscoelastico di Haslach calcolato discretamente sugli elementi della mesh)
+        _, _, physical_residuals = haslach_constitutive_evolution_2D(
+            pinn_or_hybrid_displacement=u_final,
+            X_ref=X_nodes,
+            elements=mesh.elements,
+            k=5.0, c1=4.0, c2=4.0, c3=8.0, c=0.88,
+            b=torch.zeros(2),
+            mode="discrete"
+        )
+        loss_physics = r_loss(physical_residuals)
+        
+        # Ponderazione con parametro di regolarizzazione lambda
+        lambda_F = 0.1
+        total_loss = loss_data + lambda_F * loss_physics
+        
+        # Backward pass unificato
+        total_loss.backward()
+        optimizer.step()
+        
+        if epoch % 10 == 0:
+            logger.info(f"Epoca {epoch:03d} | Loss Totale: {total_loss.item():.6f} | Loss Dati: {loss_data.item():.6f} | Loss Fisica: {loss_physics.item():.6f}")
 
 if __name__ == "__main__":
-    init_logging()
-    logger = logging.getLogger(__name__)
-
-    with open(CONFIG_PATH, "r") as f:
-        cfg = yaml.safe_load(f)
-    logger.info(f"Config loaded from: {CONFIG_PATH.absolute()}")
-
-    set_seed(cfg["seed"])
-    out_dir = Path(cfg["output_dir"])
-    checkpoint_dir = out_dir / "checkpoints" / cfg["model"]["model_name"]
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    metrics_logger = CSVLogger(
-        filepath=out_dir / "metrics.csv",
-        fieldnames=[
-            "epoch",
-            "total_loss",
-            #           "loss_haslach",
-            "loss_momentum",
-            "loss_bc",
-            "learning_rate",
-        ],
-    )
-
-    device = torch.device(cfg["training"]["device"])
-
-    model_name = cfg["model"]["model_name"]
-    arch = cfg["model"]["architecture"]
-    in_channels = cfg["model"]["in_channels"]
-    hidden_layers = cfg["model"]["hidden_layers"]
-    hidden_dim = cfg["model"]["hidden_dim"]
-    out_class = cfg["model"]["out_class"]
-
-    pinn = BACKBONE_REGISTRY[arch](
-        in_channels, hidden_layers, hidden_dim, out_class
-    ).to(device)
-    optimizer = Adam(pinn.parameters(), lr=float(cfg["optimizer"]["lr"]))
-    fine_optimizer = optimizer_lbfgs = LBFGS(
-        pinn.parameters(),
-        lr=1.0,
-        max_iter=20,
-        max_eval=25,
-        history_size=50,
-        line_search_fn="strong_wolfe",
-    )
-
-    epochs = int(cfg["training"]["epochs"])
-    lbfgs_epochs = int(cfg["training"]["lbfgs_epochs"])
-    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-3)
-
-    eq_name = cfg["physics"]["equation"]
-    k = float(cfg["physics"]["relaxation_modulus"])
-    c = float(cfg["physics"]["stress_scaling_factor"])
-    c1, c2, c3 = [float(val) for val in cfg["physics"]["c_constants"]]
-    b_val = cfg["physics"].get("body_force", [0.0, 0.0])
-
-    pde_operator = OPERATOR_REGISTRY[eq_name]
-
-    w_haslach = float(cfg["training"]["loss_weights"]["lambda_haslach"])
-    w_momentum = float(cfg["training"]["loss_weights"]["lambda_momentum"])
-    w_bc = float(cfg["training"]["loss_weights"].get("lambda_bc", 10.0))
-
-    logger.info("Starting Training...")
-
-    for epoch in range(1, epochs + 1):
-        pinn.train()
-        optimizer.zero_grad()
-
-        x = train_points(cfg, device)
-
-        n_pts = x.shape[0]
-        b = torch.tensor(b_val, dtype=torch.float32, device=device).expand(n_pts, 2)
-
-        _, _, res_momentum = pde_operator(pinn, x, k, c1, c2, c3, c, b)
-
-        # loss_haslach = r_loss(res_haslach)
-        loss_momentum = r_loss(res_momentum)
-
-        x_left, x_right, x_bottom, x_top = boundary_points(cfg, device)
-        n_bc_segment = x_left.shape[0]
-
-        u_left_pred = pinn(x_left)
-        u_right_pred = pinn(x_right)
-        u_bottom_pred = pinn(x_bottom)
-        u_top_pred = pinn(x_top)
-
-        loss_bc_left = bc_loss(
-            u_left_pred[:, 0:1], torch.zeros((n_bc_segment, 1), device=device)
-        )
-
-        loss_bc_right = bc_loss(
-            u_right_pred[:, 0:1], torch.full((n_bc_segment, 1), 0.10, device=device)
-        )
-
-        loss_bc_bottom = bc_loss(
-            u_bottom_pred[:, 1:2], torch.zeros((n_bc_segment, 1), device=device)
-        )
-
-        loss_bc_top = bc_loss(
-            u_top_pred[:, 1:2], torch.zeros((n_bc_segment, 1), device=device)
-        )
-
-        loss_bc = loss_bc_left + loss_bc_right + loss_bc_bottom + loss_bc_top
-
-        loss = (
-            (w_momentum * loss_momentum)
-            + (w_bc * loss_bc)  # +(w_haslach * loss_haslach)
-        )
-
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-
-        current_lr = scheduler.get_last_lr()[0]
-
-        if epoch % (epochs // 10) == 0 or epoch == 1:
-            logger.info(
-                f"Epoch {epoch:5d}/{epochs} | "
-                f"Total: {loss.item():.4e} | "
-                # f"Haslach: {loss_haslach.item():.4e} | "
-                f"Momentum: {loss_momentum.item():.4e} | "
-                f"BC: {loss_bc.item():.4e}"
-            )
-            torch.save(pinn.state_dict(), checkpoint_dir / f"{model_name}_{epoch}.pt")
-
-        metrics_logger.log(
-            {
-                "epoch": epoch,
-                "total_loss": loss.item(),
-                # "loss_haslach": loss_haslach.item(),
-                "loss_momentum": loss_momentum.item(),
-                "loss_bc": loss_bc.item(),
-                "learning_rate": current_lr,
-            }
-        )
-
-    torch.save(pinn.state_dict(), checkpoint_dir / f"{model_name}_coarse.pt")
-    logger.info("Coarse training completed")
-
-    x_fixed = train_points(cfg, device)
-    n_pts_fixed = x_fixed.shape[0]
-    b_fixed = torch.tensor(b_val, dtype=torch.float32, device=device).expand(
-        n_pts_fixed, 2
-    )
-    x_l, x_r, x_b, x_t = boundary_points(cfg, device)
-
-    def closure():
-        fine_optimizer.zero_grad()
-
-        _, _, res_momentum = pde_operator(pinn, x_fixed, k, c1, c2, c3, c, b_fixed)
-        loss_momentum = r_loss(res_momentum)
-
-        u_l = pinn(x_l)
-        u_r = pinn(x_r)
-        u_b = pinn(x_b)
-        u_t = pinn(x_t)
-
-        loss_bc_l = bc_loss(u_l[:, 0:1], torch.zeros_like(u_l[:, 0:1]))
-        loss_bc_r = bc_loss(u_r[:, 0:1], torch.full_like(u_r[:, 0:1], 0.10))
-        loss_bc_b = bc_loss(u_b[:, 1:2], torch.zeros_like(u_b[:, 1:2]))
-        loss_bc_t = bc_loss(u_t[:, 1:2], torch.zeros_like(u_t[:, 1:2]))
-
-        loss_bc = loss_bc_l + loss_bc_r + loss_bc_b + loss_bc_t
-        loss = (w_momentum * loss_momentum) + (w_bc * loss_bc)
-
-        loss.backward()
-        return loss
-
-    logger.info("Starting L-BFGS Fine Training...")
-    for epoch in range(1, lbfgs_epochs + 1):
-        loss = fine_optimizer.step(closure)
-        if epoch % (lbfgs_epochs // 10) == 0 or epoch == 1:
-            logger.info(
-                f"L-BFGS Step {epoch:4d}/{lbfgs_epochs} | Loss: {loss.item():.4e}"
-            )
-            metrics_logger.log(
-                        {
-                            "epoch": epochs+epoch,
-                            "total_loss": loss.item(),
-                        }
-                    )
-            torch.save(
-                pinn.state_dict(), checkpoint_dir / f"{model_name}_{epoch}_fine.pt"
-            )
-
-    torch.save(pinn.state_dict(), out_dir / f"{model_name}.pt")
-    logger.info("Static PINN training completed and final model saved.")
+    train_hybrid_model()
