@@ -16,18 +16,21 @@ from src.utils import CSVLogger, init_logging, set_seed
 CONFIG_PATH = Path("config.yaml")
 
 if __name__ == "__main__":
-    # Log & Config
     init_logging()
     logger = logging.getLogger(__name__)
 
     with open(CONFIG_PATH, "r") as f:
         cfg = yaml.safe_load(f)
-    logger.info(f"Config loaded. Config file path: {CONFIG_PATH.absolute()}")
+    logger.info(f"Config loaded from: {CONFIG_PATH.absolute()}")
+
+    set_seed(cfg["seed"])
+    out_dir = Path(cfg["output_dir"])
+    checkpoint_dir = out_dir / "checkpoints" / cfg["model"]["model_name"]
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     metrics_logger = CSVLogger(
-        filepath=Path(cfg["output_dir"]) / "metrics.csv",
+        filepath=out_dir / "metrics.csv",
         fieldnames=[
-            "λ_force",
             "epoch",
             "total_loss",
             "loss_momentum",
@@ -37,12 +40,8 @@ if __name__ == "__main__":
         ],
     )
 
-    # Folder structure
-    out_dir = Path(cfg["output_dir"])
-    checkpoint_dir = out_dir / "checkpoints" / cfg["model"]["model_name"]
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device(cfg["training"]["device"])
 
-    # Model COnfig
     model_name = cfg["model"]["model_name"]
     arch = cfg["model"]["architecture"]
     in_channels = cfg["model"]["in_channels"]
@@ -78,7 +77,7 @@ if __name__ == "__main__":
 
     logger.info("Starting Parametric Temporal Training...")
 
-    for epoch in range(epochs):
+    for epoch in range(1, epochs + 1):
         pinn.train()
         optimizer.zero_grad()
 
@@ -102,20 +101,24 @@ if __name__ == "__main__":
         x_b, t_b, F_b = bottom
         x_top, t_top, F_top = top
 
+        # Dirichlet Clamped Left Boundary
         u_left_pred = pinn(x_l, t_l, F_l)
         loss_bc_left = bc_loss(u_left_pred, torch.zeros_like(u_left_pred))
 
+        # Roller Boundary on Bottom (u_y = 0)
         u_bottom_pred = pinn(x_b, t_b, F_b)
         loss_bc_bottom = bc_loss(
             u_bottom_pred[:, 1:2], torch.zeros_like(u_bottom_pred[:, 1:2])
         )
 
+        # Traction-Free Boundary on Top (P @ n_top = 0, where n_top = [0, 1]^T)
         _, P_top, _ = pde_operator(
             pinn, x_top, t_top, F_top, k, c1, c2, c3, c, torch.zeros_like(x_top)
         )
         n_top = torch.tensor([0.0, 1.0], device=device).expand(x_top.shape[0], 2)
         loss_bc_top = traction_bc_loss(P_top, n_top, torch.zeros_like(x_top))
 
+        # Parametric Traction on Right Edge (P @ n_right = [F, 0]^T, where n_right = [1, 0]^T)
         _, P_right, _ = pde_operator(
             pinn, x_r, t_r, F_r, k, c1, c2, c3, c, torch.zeros_like(x_r)
         )
@@ -130,24 +133,29 @@ if __name__ == "__main__":
 
         loss.backward()
         optimizer.step()
+        scheduler.step()
+
+        current_lr = scheduler.get_last_lr()[0]
 
         if epoch % (epochs // 10) == 0 or epoch == 1:
             logger.info(
                 f"Epoch {epoch:5d}/{epochs} | "
+                f"LR: {current_lr:.2e} | "
                 f"Total: {loss.item():.4e} | "
                 f"Momentum: {loss_momentum.item():.4e} | "
                 f"BC: {loss_bc.item():.4e} | "
                 f"IC: {loss_ic.item():.4e}"
             )
-
+            torch.save(pinn.state_dict(), checkpoint_dir / f"{model_name}_{epoch}.pt")
 
         metrics_logger.log(
             {
-                "epoch": epoch + 1,
+                "epoch": epoch,
                 "total_loss": loss.item(),
                 "loss_momentum": loss_momentum.item(),
                 "loss_bc": loss_bc.item(),
                 "loss_ic": loss_ic.item(),
+                "learning_rate": current_lr,
             }
         )
 

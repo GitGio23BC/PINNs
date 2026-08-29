@@ -1,8 +1,15 @@
-from .dataset_load import init_n_bound_data, test_data
-from .harmonics import harmonic_generator
+from .dataset_load import (
+    boundary_points,
+    initial_points,
+    load_test_data,
+    train_points,
+)
+from .viscoelastic import time_points
 
 __all__ = [
-    "harmonic_generator",
-    "init_n_bound_data",
-    "test_data",
+    "boundary_points",
+    "initial_points",
+    "load_test_data",
+    "time_points",
+    "train_points",
 ]
