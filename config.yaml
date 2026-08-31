@@ -1,64 +1,72 @@
 # ==========================================
 # EXPERIMENT IDENTIFICATION
 # ==========================================
-seed: 42                           
+seed: 42
 output_dir: "./output"
-bulk: False
+bulk: false
 
 # ==========================================
 # GLOBAL PHYSICS CONSTANTS
 # ==========================================
-physics: &phys_constants
-  equation: "viscoelastic_residual_Fung_2D"
-  relaxation_modulus: 15.0
-  stress_scaling_factor: 0.88
-  c_constants: [13.0, 13.0, 0.0]     
-  density: 1.0                        
-  body_force: [0.0, 0.0]              
+physics:
+  equation: "viscoelastic_residual_Holzapfel_2D"
+  k_relax: 15.0
+  c: 0.88
+  c1: 13.0
+  c2: 13.0
+  c3: 0.0
+  area: 1.0
+  density: 1.0
+  body_force: [0.0, 0.0]
+  sigma_max: 1.0
 
 # ==========================================
 # MODEL CONFIGURATION
 # ==========================================
 model:
   model_name: "2d_pinn_viscoelastic"
-  architecture: "MLP"
-  in_channels: 2                 
-  hidden_layers: 4
+  architecture: "MeshGraphNet"
+  node_in_dim: 6
+  edge_in_dim: 6
+  latent_dim: 64
   hidden_dim: 64
-  out_class: 2                        
+  num_layers: 4
+  output_dim: 5
 
 # ==========================================
 # DATA & SPATIO-TEMPORAL DOMAIN
 # ==========================================
 data:
-  dataset_name: "time_points.pt"
+  dataset_name: "ground_truth_2D.pt"
   data_dir: "./data/synt"
-  batch_size: 1024
-  num_workers: 4                   
+  batch_size: 1
+  num_workers: 0
 
 domain:
   x_range: [0.0, 1.0]
   y_range: [0.0, 1.0]
   t_range: [0.0, 1.0]
-  n_collocation: 5000
-  n_bc: 500
+  nx: 10
+  ny: 10
+  n_steps: 10
 
 # ==========================================
 # TRAINING CONFIGURATION
 # ==========================================
 training:
   device: "cpu"
-  epochs: 2000
-  lbfgs_epochs : 200
+  epochs: 100
   loss_weights:
-    lambda_haslach: 0
-    lambda_momentum: 10
-    lambda_bc: 100
+    lambda_data: 1.0
+    lambda_haslach: 10.0
+    lambda_momentum: 1
+    lambda_bc_base: 10.0
+    lambda_bc_tip: 100.0
 
 # ==========================================
 # OPTIMIZER
 # ==========================================
 optimizer:
-  name: "adam"                    
-  lr: 0.025                  
+  name: "adam"
+  lr: 0.005
   weight_decay: 0.0
