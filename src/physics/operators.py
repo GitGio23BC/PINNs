@@ -1,53 +1,64 @@
 import torch
-from src.mechanics.deformation import compute_element_deformation_gradients
-from src.utils import grad, voigt_tensor
-from .equations import HUGO, FungEnergy_2D, Material
 
-def haslach_constitutive_evolution_2D(
-    u_total: torch.Tensor,          # Spostamento ibrido incognito al passo corrente (u_pinn + delta_u_gnn)
-    X_ref: torch.Tensor,             # Coordinate materiali di riferimento dei nodi (X)
-    E_prev_tensor: torch.Tensor,      # Tensore di Green-Lagrange Voigt salvato al passo t_{n-1} (congelato!)
-    k_relax: float,                  # Modulo di rilassamento viscoelastico (k)
-    c_isotropic: float,              # Contributo isotropo della matrice (c)
-    k2_fiber: float,                 # Parametro esponenziale delle fibre (k2)
-    beta_fiber: float,               # Angolo di orientamento delle fibre (beta) in radianti
-    S_applied: torch.Tensor,   # Sforzo esterno applicato Voigt [S11, S22, S12] al passo corrente
-    dt: float,                       # Passo temporale discreto (delta_t)
-    reg_Hessian: float = 1e-2,       # Stabilizzazione diagonalizzata contro det_H = 0
+from ..utils import div, grad, voigt_tensor, voigt_to_tensor
+from .equations import HUGO, HolzapfelEnergy_2D, Kinematics
+
+
+def haslach_constitutive_residual_2D(
+    u_pred: torch.Tensor,
+    S_pred: torch.Tensor,
+    X_ref: torch.Tensor,
+    E_prev: torch.Tensor,
+    dt: float,
+    k_relax: float,
+    c: float,
+    c1: float,
+    c2: float,
+    c3: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    # Calcola il tensore di Green-Lagrange Voigt corrente E^n e il residuo di Haslach per l'evoluzione costitutiva viscoelastica 2D.
-    num_elements = u_total.shape[0]
-    
-    # 1. Costruzione del tensore identità 3D per il calcolo di F e E
-    I = torch.eye(3, device=u_total.device).unsqueeze(0).repeat(num_elements, 1, 1)
 
-    # 2. Calcolo del Tensore di Deformazione F^n = I + grad(u_total, X_ref)
-    F = I + grad(u_total, X_ref)  # [num_elementi, 3, 3]
-    
-    # 3. Calcolo del Tensore di Green-Lagrange corrente E^n = 0.5 * (F^T * F - I) (3D per incompressibilità)
-    E_tensor = 0.5 * (torch.bmm(F.transpose(1, 2), F) - I)
-    E_voigt = voigt_tensor(E_tensor, True)  # [num_elementi, 3]
+    grad_u = grad(u_pred, X_ref)
+    kin = Kinematics(grad_u)
 
-    E_dot = (E_tensor - E_prev_tensor) / dt
-    E_dot_voigt = voigt_tensor(E_dot, True)
-    
-    # 5. Calcolo dei parametri delle fibre anisotropiche HGO (Passo 515 del paper)
-    c1 = 4.0 * k2_fiber * (torch.cos(beta_fiber) ** 4)
-    c2 = 4.0 * k2_fiber * (torch.sin(beta_fiber) ** 4)
-    c3 = 8.0 * k2_fiber * (torch.cos(beta_fiber) ** 2) * (torch.sin(beta_fiber) ** 2)
-        
-    # Sforzo esterno applicato (componenti principali Sh e Sz)
-    S_applied_voigt = voigt_tensor(S_applied, True)
+    E_curr_voigt = voigt_tensor(kin.E, is_shear=True)
+    E_prev_voigt = voigt_tensor(E_prev) if E_prev.ndim == 3 else E_prev
 
-    # 6. Calcolo del target di deformazione (dot{E}_target)
-    # Questo è il target di deformazione che il modello deve raggiungere
-    E_dot_target = HUGO(FungEnergy_2D(c_isotropic, c1, c2, c3), k_relax).haslach_equation(E_voigt, S_applied_voigt)
+    E_dot = (E_curr_voigt - E_prev_voigt) / dt
 
-    # Residuo di Haslach
-    residual = E_dot_voigt - E_dot_target
-    
-    return E_dot_voigt, residual
+    psi = HolzapfelEnergy_2D(c=c, c1=c1, c2=c2, c3=c3, device=X_ref.device)
+    visco_model = HUGO(psi=psi, k_relax=k_relax)
+
+    S_curr_voigt = voigt_tensor(S_pred, is_shear=False) if S_pred.ndim == 3 else S_pred
+
+    E_dot_pred = visco_model.haslach_equation(E_curr_voigt, S_curr_voigt)
+
+    residual = E_dot - E_dot_pred
+
+    return E_curr_voigt, residual
+
+
+def pako_residual_2D(
+    u_pred: torch.Tensor,
+    S_pred: torch.Tensor,
+    X_ref: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+
+    grad_u = grad(u_pred, X_ref)
+    kin = Kinematics(grad_u)
+    S = (
+        voigt_to_tensor(S_pred, is_shear=False)
+        if S_pred.ndim == 2 and S_pred.shape[-1]
+        else S_pred
+    )
+
+    P = kin.compute_P(S)
+    div_P = div(P, X_ref)
+
+    return div_P + b
+
 
 OPERATOR_REGISTRY = {
-    "viscoelastic_residual_Fung_2D": haslach_constitutive_evolution_2D,
+    "viscoelastic_residual_Holzapfel_2D": haslach_constitutive_residual_2D,
+    "piola_kirchhoff_quasi_static_residual_2D": pako_residual_2D,
 }
