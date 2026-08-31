@@ -1,15 +1,5 @@
-from .dataset_load import (
-    boundary_points,
-    initial_points,
-    load_test_data,
-    train_points,
-)
-from .viscoelastic import time_points
+from .viscoelastic import generate_ground_truth
 
 __all__ = [
-    "boundary_points",
-    "initial_points",
-    "load_test_data",
-    "time_points",
-    "train_points",
+    "generate_ground_truth",
 ]
