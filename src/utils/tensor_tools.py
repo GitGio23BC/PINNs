@@ -76,12 +76,9 @@ def voigt_to_tensor(
     row_idx, col_idx = torch.triu_indices(d, d, offset=1, device=v.device)
     shear = v[:, d:]
 
-    if is_shear:
-        x[:, row_idx, col_idx] = shear / 2.0
-        x[:, col_idx, row_idx] = shear / 2.0
-    else:
-        x[:, row_idx, col_idx] = shear
-        x[:, col_idx, row_idx] = shear
+    factor = 2.0 if is_shear else 1.0
+    x[:, row_idx, col_idx] = shear / factor
+    x[:, col_idx, row_idx] = shear / factor
 
     return x
 
