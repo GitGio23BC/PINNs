@@ -25,7 +25,7 @@ def test(model_path: Path | None = None):
     logger = logging.getLogger(__name__)
 
     cfg = load_config()
-    device = torch.device(cfg["training"].get("device", "cpu"))
+    device = "cpu"
     output_dir = Path(cfg.get("output_dir", "./output"))
 
     if model_path is None:
@@ -107,7 +107,7 @@ def test(model_path: Path | None = None):
     # Testing
     logger.info("Statirn PINN tetstseting...")
     for _ in range(1, time_steps):
-        graph = create_graph(mesh=mesh, u=u_prev)
+        graph = create_graph(mesh=mesh, u=u_prev, device=device)
         predictions = mgn(graph)
         X_ref = graph.mesh_nodes
 

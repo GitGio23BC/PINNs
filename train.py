@@ -129,23 +129,22 @@ def train():
     # Training
     logger.info("Stratring PINN-MSG trainingin...")
 
-    for t_step in range(1, time_steps):
-        t_curr = time_grid[t_step].item()
-        u_target = u_exact_traj[t_step]
-        S_applied = F_trajectory[t_step] / A
-        logger.info(f"\n--- Time Step {t_step}/{time_steps} (t = {t_curr:.3f}s) ---")
+    for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
+        optimizer.zero_grad()
 
-        for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
-            optimizer.zero_grad()
+        for t_step in range(time_steps):
+            t_curr = time_grid[t_step].item()
+            u_target = u_exact_traj[t_step]
+            S_applied = F_trajectory[t_step] / A
+            logger.info(f"\n--- Time Step {t_step}/{time_steps} (t = {t_curr:.3f}s) ---")
 
-            graph = create_graph(mesh=mesh, u=u_prev)
+            graph = create_graph(mesh=mesh, u=u_prev, device=device)
             predictions = mgn(graph)
             X_ref = graph.mesh_nodes
 
             u_pred = predictions[:, :2]
             S_pred = predictions[:, 2:]
 
-            # Data Loss
             loss_data = mse(u_pred, u_target)
 
             # Viscoelastic Loss
@@ -215,18 +214,16 @@ def train():
                     },
                     checkpoint_dir / f"{model_name}_{epoch}{t_step}.pt",
                 )
-
-        E_prev_voigt = E_current_voigt.detach()  # type: ignore
-        u_prev = u_pred.detach()  # type: ignore
-    torch.save(
-        {
-            "model_state_dict": mgn.state_dict(),
-            "config": cfg,
-        },
-        output_dir / f"{model_name}.pt",
-    )
-    logger.info("-----------------------------Train Ended-----------------------------")
-
-
+            E_prev_voigt = E_current_voigt.detach()  # type: ignore
+            u_prev = u_pred.detach()  # type: ignore
+        torch.save(
+            {
+                "model_state_dict": mgn.state_dict(),
+                "config": cfg,
+            },
+            output_dir / f"{model_name}.pt",
+        )
+        logger.info("-----------------------------Train Ended-----------------------------")
+    
 if __name__ == "__main__":
     train()

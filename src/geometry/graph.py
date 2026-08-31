@@ -4,7 +4,6 @@ import torch
 
 from .mesh import Mesh
 
-
 @dataclass
 class Graph:
     """
@@ -64,6 +63,7 @@ class Graph:
 def create_graph(
     mesh: Mesh,
     u: torch.Tensor,
+    device: torch.device | str = "cpu",
 ) -> Graph:
 
     ref = mesh.nodes.clone().detach()
@@ -75,10 +75,10 @@ def create_graph(
     senders = []
     receivers = []
 
-    senders = torch.cat([mesh.edges[:, 0], mesh.edges[:, 1]], dim=0).to(
+    senders = torch.cat([mesh.edges[:, 0], mesh.edges[:, 1]], dim=0).to(device=device,
         dtype=torch.long
     )
-    receivers = torch.cat([mesh.edges[:, 1], mesh.edges[:, 0]], dim=0).to(
+    receivers = torch.cat([mesh.edges[:, 1], mesh.edges[:, 0]], dim=0).to(device=device,
         dtype=torch.long
     )
 
@@ -89,6 +89,7 @@ def create_graph(
     cur_dist = torch.linalg.vector_norm(cur_rel, dim=-1, keepdim=True)
 
     edge_features = torch.cat([ref_rel, ref_dist, cur_rel, cur_dist], dim=-1)
+    edge_features = edge_features.to(device=device, dtype=torch.float32)
 
     return Graph(
         mesh_nodes=ref,

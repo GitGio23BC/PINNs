@@ -101,6 +101,7 @@ def create_mesh(
     ], dim=0)
     all_edges, _ = torch.sort(all_edges, dim=1)
     edges = torch.unique(all_edges, dim=0)
+    edeges = edges.to(device=device, dtype=torch.int64)
 
     tol = 1e-12
     boundary_mask = (

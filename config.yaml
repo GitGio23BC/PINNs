@@ -54,7 +54,7 @@ domain:
 # TRAINING CONFIGURATION
 # ==========================================
 training:
-  device: "cpu"
+  device: "cuda"
   epochs: 100
   loss_weights:
     lambda_data: 1.0
