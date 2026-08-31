@@ -9,6 +9,7 @@ class MLP(nn.Module):
         hidden_layers: int,
         hidden_dim: int,
         out_dim: int,
+        use_layer_norm: bool = True,
         activation: type[nn.Module] = nn.Tanh,
     ) -> None:
         super().__init__()
@@ -20,7 +21,12 @@ class MLP(nn.Module):
             [nn.Linear(hidden_dim, hidden_dim) for _ in range(hidden_layers)]
         )
 
-        self.output_layer = nn.Linear(hidden_dim, out_dim)
+        layers = [nn.Linear(hidden_dim, out_dim)]
+
+        if use_layer_norm:
+            layers.append(nn.LayerNorm(out_dim)) # type: ignore
+
+        self.output_layer = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.activation(self.input_layer(x))
@@ -31,6 +37,13 @@ class MLP(nn.Module):
         x = self.output_layer(x)
         return x
 
+
+ACTIVATION_REGISTRY: dict[str, type[nn.Module]] = {
+    "tanh": nn.Tanh,
+    "silu": nn.SiLU,
+    "gelu": nn.GELU,
+    "relu": nn.ReLU,
+}
 
 BACKBONE_REGISTRY = {
     "MLP": MLP,
