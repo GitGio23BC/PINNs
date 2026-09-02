@@ -41,6 +41,8 @@ def test(model_path: Path | None = None):
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
 
     time_grid = dataset["time"]
+    t_min, t_max = time_grid[0].item(), time_grid[-1].item()
+    time_steps = len(time_grid)
     u_exact_traj = dataset["u"]
     F_trajectory = dataset.get("F_applied", None)
 
@@ -107,8 +109,12 @@ def test(model_path: Path | None = None):
     # Testing
     logger.info("Statirn PINN tetstseting...")
     for _ in range(1, time_steps):
-        graph = create_graph(mesh=mesh, u=u_prev, device=device)
+
+        t_curr = time_grid[_].item()
+        t_norm = (t_curr - t_min) / (t_max - t_min)
+        graph = create_graph(mesh=mesh, u=u_prev, t=t_norm, device=device)
         predictions = mgn(graph)
+
         X_ref = graph.mesh_nodes
 
         u_pred = predictions[:, :2]

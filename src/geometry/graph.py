@@ -63,6 +63,7 @@ class Graph:
 def create_graph(
     mesh: Mesh,
     u: torch.Tensor,
+    t: float | torch.Tensor | None = None,
     device: torch.device | str = "cpu",
 ) -> Graph:
 
@@ -70,7 +71,14 @@ def create_graph(
     ref.requires_grad_(True)
     cur = ref + u
 
-    node_features = torch.cat([ref, cur, u], dim=-1)
+    t_feature = torch.full(
+        (mesh.n_nodes, 1),
+          float(t), 
+          device=device, 
+          dtype=torch.float32
+    )
+    
+    node_features = torch.cat([ref, cur, u, t_feature], dim=-1)
 
     senders = []
     receivers = []

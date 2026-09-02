@@ -122,26 +122,28 @@ def train():
     time_steps = len(time_grid)
     dt = float((time_grid[-1] - time_grid[0]) / max(time_steps - 1, 1))
 
-    # Initialisation
-    E_prev_voigt = torch.zeros((num_nodes, 3), device=device, dtype=torch.float32)
-    u_prev = torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
-
     # Training
     logger.info("Stratring PINN-MSG trainingin...")
 
     for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
-        optimizer.zero_grad()
+        E_prev_voigt = torch.zeros((num_nodes, 3), device=device, dtype=torch.float32)
+        u_prev = torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
+
+        total_loss = 0.0
 
         for t_step in range(time_steps):
+            # Initialisation
+            optimizer.zero_grad()
             t_curr = time_grid[t_step].item()
+            t_norm = (t_curr - time_grid[0].item()) / (time_grid[-1].item() - time_grid[0].item())
             u_target = u_exact_traj[t_step]
             S_applied = F_trajectory[t_step] / A
             logger.info(f"\n--- Time Step {t_step}/{time_steps} (t = {t_curr:.3f}s) ---")
-
-            graph = create_graph(mesh=mesh, u=u_prev, device=device)
+            
+            graph = create_graph(mesh=mesh, u=u_prev, t=t_norm, device=device)
             predictions = mgn(graph)
             X_ref = graph.mesh_nodes
-
+                
             u_pred = predictions[:, :2]
             S_pred = predictions[:, 2:]
 
@@ -177,7 +179,11 @@ def train():
 
             S_tip_pred = S_pred[tip_nodes_idx]
             S_tip_applied = S_applied[tip_nodes_idx]
-            loss_bc_tip = bc_loss(S_tip_pred, S_tip_applied)
+
+            loss_bc_tip = bc_loss(
+                S_tip_pred,
+                S_tip_applied
+            )
 
             # Total Loss
             total_loss = (
@@ -216,6 +222,7 @@ def train():
                 )
             E_prev_voigt = E_current_voigt.detach()  # type: ignore
             u_prev = u_pred.detach()  # type: ignore
+
         torch.save(
             {
                 "model_state_dict": mgn.state_dict(),
@@ -223,7 +230,7 @@ def train():
             },
             output_dir / f"{model_name}.pt",
         )
-        logger.info("-----------------------------Train Ended-----------------------------")
+    logger.info("-----------------------------Train Ended-----------------------------")
     
 if __name__ == "__main__":
     train()
