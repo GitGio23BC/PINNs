@@ -5,7 +5,7 @@ import torch
 from torch.optim import Adam
 from tqdm import tqdm
 
-from src.geometry import create_graph, create_mesh
+from src.geometry import create_mesh, create_time_graph
 from src.loader import generate_ground_truth
 from src.loss import bc_loss, mse, r_loss
 from src.models import MeshGraphNet
@@ -26,17 +26,17 @@ def train():
     output_dir = Path(cfg.get("output_dir", "./output"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model_name = cfg["model"]["model_name"]
+    model_name = "train - time_graph - raw_feats - inner_loop" #cfg["model"]["model_name"]
     checkpoint_dir = Path(output_dir / "checkpoints" / model_name)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logger = logging.getLogger(__name__)
     metrics_logger = CSVLogger(
-        output_dir / "metrics.csv",
+        output_dir / f"metrics_{model_name}.csv",
         fieldnames=[
             "step",
             "epoch",
-            "total_loss",
+            "step_loss",
             "loss_data",
             "loss_haslach",
             "loss_pako",
@@ -82,7 +82,7 @@ def train():
 
     # Model
     mgn = MeshGraphNet(
-        node_in_dim=int(cfg["model"]["node_in_dim"]),
+        node_in_dim=7,#int(cfg["model"]["node_in_dim"]),
         edge_in_dim=int(cfg["model"]["edge_in_dim"]),
         latent_dim=int(cfg["model"]["latent_dim"]),
         hidden_dim=int(cfg["model"]["hidden_dim"]),
@@ -122,28 +122,42 @@ def train():
     time_steps = len(time_grid)
     dt = float((time_grid[-1] - time_grid[0]) / max(time_steps - 1, 1))
 
-    # Initialisation
-    E_prev_voigt = torch.zeros((num_nodes, 3), device=device, dtype=torch.float32)
-    u_prev = torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
-
     # Training
     logger.info("Stratring PINN-MSG trainingin...")
 
     for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
-        optimizer.zero_grad()
+        # Initialisation
+        E_prev_voigt = torch.zeros((num_nodes, 3), device=device, dtype=torch.float32)
+        u_prev = torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
+
+        epoch_loss = torch.zeros((1,), device=device)
+        metrics = {
+            "step_loss": 0.0,
+            "loss_data": 0.0,
+            "loss_haslach": 0.0,
+            "loss_pako": 0.0,
+            "loss_bc_base": 0.0,
+            "loss_bc_tip": 0.0,
+        }
 
         for t_step in range(time_steps):
-            t_curr = time_grid[t_step].item()
+            optimizer.zero_grad()
+
+            t_curr = time_grid[t_step]
             u_target = u_exact_traj[t_step]
             S_applied = F_trajectory[t_step] / A
-            logger.info(f"\n--- Time Step {t_step}/{time_steps} (t = {t_curr:.3f}s) ---")
 
-            graph = create_graph(mesh=mesh, u=u_prev, device=device)
+            graph = create_time_graph(mesh=mesh, u=u_prev, t=t_curr, device=device)
             predictions = mgn(graph)
-            X_ref = graph.mesh_nodes
 
-            u_pred = predictions[:, :2]
-            S_pred = predictions[:, 2:]
+            X_ref = graph.mesh_nodes
+            X_coord = X_ref[:, 0:1]
+
+            u_raw = predictions[:, :2]
+            u_pred = X_coord * u_raw
+
+            S_raw = predictions[:, 2:]
+            S_pred = S_applied + (X_coord - x_max) * S_raw
 
             loss_data = mse(u_pred, u_target)
 
@@ -180,7 +194,7 @@ def train():
             loss_bc_tip = bc_loss(S_tip_pred, S_tip_applied)
 
             # Total Loss
-            total_loss = (
+            step_loss = (
                 w_data * loss_data
                 + w_haslach * loss_haslach
                 + w_momentum * loss_pako
@@ -188,42 +202,48 @@ def train():
                 + w_bc_tip * loss_bc_tip
             )
 
-            total_loss.backward()
+            step_loss.backward()
             optimizer.step()
+            
+            epoch_loss = epoch_loss + step_loss.detach()
 
-            # Checkpoint
-            if epoch % 100 == 0 or epoch == epochs:
-                metrics = {
-                    "step": t_step,
-                    "epoch": epoch,
-                    "total_loss": total_loss.item(),
-                    "loss_data": loss_data.item(),
-                    "loss_haslach": loss_haslach.item(),
-                    "loss_pako": loss_pako.item(),
-                    "loss_bc_base": loss_bc_base.item(),
-                    "loss_bc_tip": loss_bc_tip.item(),
-                }
-                logger.info(
-                    f"Checkpoint {' | '.join([str(k) + ': ' + str(v) for k, v in metrics.items()])}"
-                )
-                metrics_logger.log(metrics)
-                torch.save(
-                    {
-                        "model_state_dict": mgn.state_dict(),
-                        "config": cfg,
-                    },
-                    checkpoint_dir / f"{model_name}_{epoch}{t_step}.pt",
-                )
             E_prev_voigt = E_current_voigt.detach()  # type: ignore
             u_prev = u_pred.detach()  # type: ignore
+
+            # Checkpoint
+            metrics["step_loss"] += step_loss.detach().item()
+            metrics["loss_data"] += loss_data.detach().item()
+            metrics["loss_haslach"] += loss_haslach.detach().item()
+            metrics["loss_pako"] += loss_pako.detach().item()
+            metrics["loss_bc_base"] += loss_bc_base.detach().item()
+            metrics["loss_bc_tip"] += loss_bc_tip.detach().item()
+
+
+        avg_metrics = {
+            "epoch": epoch,
+            **{name: value / time_steps for name, value in metrics.items()},
+        }
+        logger.info(
+            f"Checkpoint {' | '.join([str(k) + ': ' + str(v) for k, v in metrics.items()])}"
+        )
+        metrics_logger.log(avg_metrics)
         torch.save(
             {
                 "model_state_dict": mgn.state_dict(),
                 "config": cfg,
             },
-            output_dir / f"{model_name}.pt",
+            checkpoint_dir / f"{model_name}_{epoch}.pt",
         )
-        logger.info("-----------------------------Train Ended-----------------------------")
-    
+
+    torch.save(
+        {
+            "model_state_dict": mgn.state_dict(),
+            "config": cfg,
+        },
+        output_dir / f"{model_name}.pt",
+    )
+    logger.info("-----------------------------Train Ended-----------------------------")
+
+
 if __name__ == "__main__":
     train()

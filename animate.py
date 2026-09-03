@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from matplotlib import animation
 
-from src.geometry import create_graph, create_mesh
+from src.geometry import create_mesh, create_time_graph
 from src.loader import generate_ground_truth
 from src.models import MeshGraphNet
 from src.utils import init_logging, load_config
@@ -26,10 +26,17 @@ def rollout_trajectory(
     u_curr = torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        for _ in range(1, time_steps):
-            graph = create_graph(mesh=mesh, u=u_curr)
+        for t_step in range(1, time_steps):
+            t = time_grid[t_step]
+            graph = create_time_graph(mesh=mesh, u=u_curr, t=t)
             preds = model(graph)
-            u_next = preds[:, :2]
+            u_raw = preds[:, :2]
+
+            X_ref = graph.mesh_nodes
+            X_coord = X_ref[:, 0:1]
+
+            u_next = X_coord * u_raw
+
 
             u_pred_trajectory.append(u_next)
             u_curr = u_next

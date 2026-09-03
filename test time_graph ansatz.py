@@ -111,12 +111,19 @@ def test(model_path: Path | None = None):
     logger.info("Statirn PINN tetstseting...")
     for t_step in range(time_steps):
         t_curr = time_grid[t_step]
+        S_applied = F_trajectory[t_step] / A
         graph = create_time_graph(mesh=mesh, u=u_prev, t=t_curr, device=device)
         predictions = mgn(graph)
         X_ref = graph.mesh_nodes
 
-        u_pred = predictions[:, :2]
-        S_pred = predictions[:, 2:]
+        X_ref = graph.mesh_nodes
+        X_coord = X_ref[:, 0:1]
+
+        u_raw = predictions[:, :2]
+        u_pred = X_coord * u_raw
+
+        S_raw = predictions[:, 2:]
+        S_pred = S_applied + (X_coord - x_max) * S_raw
 
         # Viscoelastic Residuals
         E_curr_voigt, haslach_res = haslach_constitutive_residual_2D(

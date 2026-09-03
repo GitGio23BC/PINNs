@@ -24,9 +24,9 @@ physics:
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "2d_pinn_viscoelastic"
+  model_name: "MGN_time_nodes"
   architecture: "MeshGraphNet"
-  node_in_dim: 6
+  node_in_dim: 7
   edge_in_dim: 6
   latent_dim: 64
   hidden_dim: 64
@@ -48,7 +48,7 @@ domain:
   t_range: [0.0, 1.0]
   nx: 10
   ny: 10
-  n_steps: 10
+  n_steps: 100
 
 # ==========================================
 # TRAINING CONFIGURATION

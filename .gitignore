@@ -13,6 +13,7 @@
 *.pyd
 
 # Project output
+/ablation/
 /export/
 /output/checkpoints/
 

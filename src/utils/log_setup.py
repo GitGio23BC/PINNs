@@ -30,11 +30,11 @@ def init_logging(level: str | None = None) -> None:
     fh.setFormatter(formatter)
     root.addHandler(fh)
 
-    ch = logging.StreamHandler(sys.stdout)
+    """ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(log_level)
     ch.setFormatter(formatter)
     root.addHandler(ch)
-
+    """
 
 def load_config(config_path: str | Path = "config.yaml") -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
