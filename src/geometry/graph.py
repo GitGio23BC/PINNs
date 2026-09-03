@@ -108,6 +108,7 @@ def create_time_graph(
 def create_graph(
     mesh: Mesh,
     u: torch.Tensor,
+    t: float | torch.Tensor | None = None,
     device: torch.device | str = "cpu",
 ) -> Graph:
 

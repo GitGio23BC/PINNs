@@ -26,7 +26,9 @@ def train():
     output_dir = Path(cfg.get("output_dir", "./output"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model_name = "train - time_graph - raw_feats - inner_loop" #cfg["model"]["model_name"]
+    model_name = (
+        "train - time_graph - raw_feats - inner_loop"  # cfg["model"]["model_name"]
+    )
     checkpoint_dir = Path(output_dir / "checkpoints" / model_name)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -54,6 +56,7 @@ def train():
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
     time_grid = dataset["time"]
+    t_min, t_max = time_grid.min(), time_grid.max()
     u_exact_traj = dataset["u"]
     F_trajectory = dataset["F_applied"]
 
@@ -82,7 +85,7 @@ def train():
 
     # Model
     mgn = MeshGraphNet(
-        node_in_dim=7,#int(cfg["model"]["node_in_dim"]),
+        node_in_dim=7,  # int(cfg["model"]["node_in_dim"]),
         edge_in_dim=int(cfg["model"]["edge_in_dim"]),
         latent_dim=int(cfg["model"]["latent_dim"]),
         hidden_dim=int(cfg["model"]["hidden_dim"]),
@@ -130,7 +133,6 @@ def train():
         E_prev_voigt = torch.zeros((num_nodes, 3), device=device, dtype=torch.float32)
         u_prev = torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
 
-        epoch_loss = torch.zeros((1,), device=device)
         metrics = {
             "step_loss": 0.0,
             "loss_data": 0.0,
@@ -141,13 +143,15 @@ def train():
         }
 
         for t_step in range(time_steps):
-            optimizer.zero_grad()
-
             t_curr = time_grid[t_step]
+            t_norm = (t_curr - t_min) / (t_max - t_min)
             u_target = u_exact_traj[t_step]
             S_applied = F_trajectory[t_step] / A
+            logger.info(
+                f"\n--- Time Step {t_step}/{time_steps} (t = {t_curr:.3f}s) ---"
+            )
 
-            graph = create_time_graph(mesh=mesh, u=u_prev, t=t_curr, device=device)
+            graph = create_time_graph(mesh=mesh, u=u_prev, t=t_norm, device=device)
             predictions = mgn(graph)
 
             X_ref = graph.mesh_nodes
@@ -191,6 +195,7 @@ def train():
 
             S_tip_pred = S_pred[tip_nodes_idx]
             S_tip_applied = S_applied[tip_nodes_idx]
+
             loss_bc_tip = bc_loss(S_tip_pred, S_tip_applied)
 
             # Total Loss
@@ -204,8 +209,6 @@ def train():
 
             step_loss.backward()
             optimizer.step()
-            
-            epoch_loss = epoch_loss + step_loss.detach()
 
             E_prev_voigt = E_current_voigt.detach()  # type: ignore
             u_prev = u_pred.detach()  # type: ignore
@@ -217,7 +220,6 @@ def train():
             metrics["loss_pako"] += loss_pako.detach().item()
             metrics["loss_bc_base"] += loss_bc_base.detach().item()
             metrics["loss_bc_tip"] += loss_bc_tip.detach().item()
-
 
         avg_metrics = {
             "epoch": epoch,
