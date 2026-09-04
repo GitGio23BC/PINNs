@@ -1,29 +1,32 @@
 import torch
 
-from src.utils import voigt_tensor
-from .constitutive import STrainEnergy
+from .constitutive import StrainEnergy
 
 
-class FungEnergy_1D(STrainEnergy):
-    def __init__(self, c: float, c1: float) -> None:
-        self.c = c
-        self.c1 = c1
+class Kinematics:
+    def __init__(self, grad_u: torch.Tensor) -> None:
+        self.grad_u = grad_u
+        dim = grad_u.shape[-1]
+        self.I = torch.eye(dim, device=grad_u.device, dtype=grad_u.dtype).unsqueeze(0)
+        self.F = self.I + self.grad_u
+        self.C = self.F.mT @ self.F
+        self.E = 0.5 * (self.C - self.I)
+        self.J = torch.linalg.det(self.F)
 
-    def energy(self, E: torch.Tensor) -> torch.Tensor:
-        exp_E = torch.exp(self.c1 * E**2)
-        return self.c * (exp_E - 1.0)
-
-    def grad(self, E: torch.Tensor) -> torch.Tensor:
-        exp_E = torch.exp(self.c1 * E**2)
-        return 2.0 * self.c * self.c1 * E * exp_E
-
-    def hessian(self, E: torch.Tensor) -> torch.Tensor:
-        exp_E = torch.exp(self.c1 * E**2)
-        return 2.0 * self.c * self.c1 * (1.0 + 2.0 * self.c1 * E**2) * exp_E
+    def compute_P(self, S: torch.Tensor):
+        return self.F @ S
 
 
-class FungEnergy_2D(STrainEnergy):
-    def __init__(self, c: float, c1: float, c2: float, c3: float) -> None:
+class HolzapfelEnergy_2D(StrainEnergy):
+    def __init__(
+        self,
+        c: float,
+        c1: float,
+        c2: float,
+        c3: float,
+        device: torch.device | str = "cpu",
+    ) -> None:
+
         self.c = c
         self.Q = torch.tensor(
             [
@@ -32,63 +35,81 @@ class FungEnergy_2D(STrainEnergy):
                 [0.0, 0.0, 0.25 * (c1 + c2)],
             ],
             dtype=torch.float32,
-        ).unsqueeze(0)
+            device=device,
+        )
 
-    def energy(self, E: torch.Tensor) -> torch.Tensor:
-        self.Q = self.Q.to(device=E.device, dtype=E.dtype)
-
-        E_vec = voigt_tensor(E, is_shear=True).unsqueeze(-1)
+    def energy(self, E_voigt: torch.Tensor) -> torch.Tensor:
+        E_vec = E_voigt.unsqueeze(-1) if E_voigt.ndim == 2 else E_voigt
 
         s = E_vec.mT @ self.Q @ E_vec
-        exp_s = torch.exp(s)
-        return self.c * (exp_s - 1.0)
 
-    def grad(self, E: torch.Tensor) -> torch.Tensor:
-        self.Q = self.Q.to(device=E.device, dtype=E.dtype)
-        E_vec = voigt_tensor(E, is_shear=True).unsqueeze(-1)
+        return self.c * (torch.exp(s) - 1.0)
 
-        B = 2.0 * self.Q
+    def grad(self, E_voigt: torch.Tensor) -> torch.Tensor:
+        E_vec = E_voigt.unsqueeze(-1) if E_voigt.ndim == 2 else E_voigt
+
+        B = 2 * self.Q  # self.Q + self.Q.mT
         s = E_vec.mT @ self.Q @ E_vec
         exp_s = torch.exp(s)
-        return self.c * exp_s * (B @ E_vec)
+        S_vec = self.c * exp_s * (B @ E_vec)
 
-    def hessian(self, E: torch.Tensor) -> torch.Tensor:
-        self.Q = self.Q.to(device=E.device, dtype=E.dtype)
-        E_vec = voigt_tensor(E, is_shear=True).unsqueeze(-1)
+        return S_vec.squeeze(-1) if E_voigt.ndim == 2 else S_vec
 
-        B = 2.0 * self.Q
+    def hessian(self, E_voigt: torch.Tensor) -> torch.Tensor:
+        E_vec = E_voigt.unsqueeze(-1) if E_voigt.ndim == 2 else E_voigt
+
+        B = 2 * self.Q
         s = E_vec.mT @ self.Q @ E_vec
         exp_s = torch.exp(s)
 
         BE = B @ E_vec
         BE_outer = BE @ BE.mT
-        return exp_s * (B.expand_as(BE_outer) + BE_outer)
+
+        return self.c * exp_s * (B.unsqueeze(0) + BE_outer)
 
 
 class HUGO:
-    def __init__(self, psi: STrainEnergy, k: float) -> None:
+    """
+    A Holzapfel-Gasser-Ogden (HGO) model.
+    It implements a very basic version assuming
+    isotropy.
+
+    The material consists of:
+
+        - 150 ml of Prosecco
+        - 20 ml of lemon balm or elderflower syrup
+        - seltzer or soda
+        - 1 slice of lemon or lime
+        - ice
+
+    Remember to decor with mint leaves.
+    """
+
+    def __init__(
+        self,
+        psi: StrainEnergy,
+        k_relax: float,
+        eps_reg: float = 1e-6,
+    ) -> None:
         self.psi = psi
-        self.k = k
+        self.k_relax = k_relax
+        self.eps_reg = eps_reg
 
-    def direct_haslach(self, E: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
-        psi_E = self.psi.grad(E)
-        H = self.psi.hessian(E)
+    def haslach_equation(
+        self,
+        E_voigt: torch.Tensor,
+        S_applied_voigt: torch.Tensor,
+    ) -> torch.Tensor:
+        S_int = self.psi.grad(E_voigt)
+        H = self.psi.hessian(E_voigt)
 
-        H_inv = torch.linalg.inv(H) if H.shape[-1] != 1 else 1.0 / H
-        H_inv2 = H_inv @ H_inv
-        # REMEMBER TO OPTIMISE THE MATRICS MOLTIPLOCATION
+        dS = (S_int - S_applied_voigt).unsqueeze(-1)
+        reg = self.eps_reg * torch.eye(3, device=H.device, dtype=H.dtype)
+        H_reg = H + reg
 
-        return -self.k * (H_inv2 @ (psi_E - S))
+        iHdS = torch.linalg.solve(H_reg, dS)
+        iiHdS = torch.linalg.solve(H_reg, iHdS)
 
-    def inverse_haslach(self, E: torch.Tensor, E_t: torch.Tensor) -> torch.Tensor:
+        E_dot_target = -self.k_relax * iiHdS
 
-        psi_E = self.psi.grad(E)
-        H = self.psi.hessian(E)
-
-        E_t_vec = voigt_tensor(E_t, is_shear=True).unsqueeze(-1)
-
-        H2 = H @ H
-        viscous_stress = (H2 @ E_t_vec) / self.k
-
-        S_vec = viscous_stress + psi_E
-        return S_vec.squeeze(-1)
+        return E_dot_target.squeeze(-1)

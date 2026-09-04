@@ -1,13 +1,15 @@
-from .constitutive import ConstitutiveModel
-from .elastic_model import HGO, MooneyRivlin, Viscoelastic
-from .equations import HUGO
-from .operators import OPERATOR_REGISTRY
+from .equations import HUGO, HolzapfelEnergy_2D, Kinematics
+from .operators import (
+    OPERATOR_REGISTRY,
+    haslach_constitutive_residual_2D,
+    pako_residual_2D,
+)
 
 __all__ = [
-    "HGO",
     "HUGO",
     "OPERATOR_REGISTRY",
-    "ConstitutiveModel",
-    "MooneyRivlin",
-    "Viscoelastic",
+    "HolzapfelEnergy_2D",
+    "Kinematics",
+    "haslach_constitutive_residual_2D",
+    "pako_residual_2D",
 ]

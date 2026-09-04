@@ -2,162 +2,227 @@ import logging
 from pathlib import Path
 
 import torch
-import yaml
 from torch.optim import Adam
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm import tqdm
 
-from src.loader import boundary_points, initial_points, train_points
-from src.loss import bc_loss, ic_loss, r_loss, traction_bc_loss
-from src.models.architectures import ParametricPINN
-from src.models.backbones import BACKBONE_REGISTRY
-from src.physics import OPERATOR_REGISTRY
-from src.utils import CSVLogger, init_logging, set_seed
+from src.geometry import create_mesh
+from src.loader import PINNSampler, generate_ground_truth
+from src.loss import bc_loss, mse, r_loss, traction_bc_loss
+from src.models import BACKBONE_REGISTRY, ParametricPINN
+from src.physics import (
+    HUGO,
+    HolzapfelEnergy_2D,
+    Kinematics,
+    haslach_constitutive_residual_2D,
+    pako_residual_2D,
+)
+from src.utils import CSVLogger, grad, init_logging, load_config, set_seed
+from src.utils.tensor_tools import voigt_to_tensor
 
-CONFIG_PATH = Path("config.yaml")
 
-if __name__ == "__main__":
+def train():
+    # Logging and set-up
     init_logging()
-    logger = logging.getLogger(__name__)
+    cfg = load_config("config.yaml")
+    set_seed(int(cfg.get("seed", 42)))
 
-    with open(CONFIG_PATH, "r") as f:
-        cfg = yaml.safe_load(f)
-    logger.info(f"Config loaded from: {CONFIG_PATH.absolute()}")
+    device = torch.device(cfg["training"].get("device", "cpu"))
+    output_dir = Path(cfg.get("output_dir", "./output"))
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    set_seed(cfg["seed"])
-    out_dir = Path(cfg["output_dir"])
-    checkpoint_dir = out_dir / "checkpoints" / cfg["model"]["model_name"]
+    model_name = cfg["model"]["model_name"]
+    checkpoint_dir = Path(output_dir / "checkpoints" / model_name)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    logger = logging.getLogger(__name__)
     metrics_logger = CSVLogger(
-        filepath=out_dir / "metrics.csv",
+        output_dir / f"metrics_{model_name}.csv",
         fieldnames=[
             "epoch",
-            "total_loss",
-            "loss_momentum",
-            "loss_bc",
+            "step_loss",
+            "loss_data",
+            "loss_haslach",
+            "loss_pako",
             "loss_ic",
-            "learning_rate",
+            "loss_bc_base",
+            "loss_bc_tip",
         ],
     )
 
-    device = torch.device(cfg["training"]["device"])
+    # Mesh
+    x_range = cfg["domain"]["x_range"]
+    y_range = cfg["domain"]["y_range"]
+    t_range = cfg["domain"]["t_range"]
+    nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
 
-    model_name = cfg["model"]["model_name"]
-    arch = cfg["model"]["architecture"]
-    in_channels = cfg["model"]["in_channels"]
-    hidden_layers = cfg["model"]["hidden_layers"]
-    hidden_dim = cfg["model"]["hidden_dim"]
-    out_class = cfg["model"]["out_class"]
+    mesh = create_mesh(
+        width=float(x_range[-1] - x_range[0]),
+        height=float(y_range[-1] - y_range[0]),
+        nx=nx,
+        ny=ny,
+        device=device,
+    )
 
-    backbone = BACKBONE_REGISTRY[arch](
-        in_channels, hidden_layers, hidden_dim, out_class
+    # Data
+    data_dir = Path(cfg["data"]["data_dir"])
+    dataset_path = data_dir / cfg["data"]["dataset_name"]
+
+    if not dataset_path.exists():
+        dataset = generate_ground_truth(cfg, device=device)
+    else:
+        dataset = torch.load(dataset_path, map_location=device, weights_only=False)
+
+    sampler = PINNSampler(dataset=dataset, cfg=cfg, mesh=mesh, device=device)
+
+    # Model
+    backbone = BACKBONE_REGISTRY[cfg["model"]["architecture"]](
+        in_dim=3,
+        hidden_layers=int(cfg["model"]["num_layers"]),
+        hidden_dim=int(cfg["model"]["hidden_dim"]),
+        out_dim=5,
     )
     pinn = ParametricPINN(
         backbone=backbone,
-        x_ref=cfg.get("domain", {}).get("x_range", 1.0)[-1],
-        t_ref=cfg.get("domain", {}).get("t_range", 1.0)[-1],
-        F_ref=cfg.get("domain", {}).get("F_range", 10.0)[-1],
+        x_range=x_range,
+        y_range=y_range,
+        t_range=t_range,
     ).to(device)
+    optimizer = Adam(
+        pinn.parameters(),
+        lr=float(cfg["optimizer"]["lr"]),
+        weight_decay=float(cfg["optimizer"].get("weight_decay", 0.0)),
+    )
 
-    optimizer = Adam(pinn.parameters(), lr=float(cfg["optimizer"]["lr"]))
+    # Physics Constants and Models
+    p_cfg = cfg["physics"]
+    visco_model = HUGO(
+        HolzapfelEnergy_2D(
+            c=float(p_cfg["c"]),
+            c1=float(p_cfg["c1"]),
+            c2=float(p_cfg["c2"]),
+            c3=float(p_cfg["c3"]),
+            device=device,
+        ),
+        k_relax=float(p_cfg["k_relax"]),
+    )
+    b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float32)
+
+    # Loss weights
+    loss_w = cfg["training"]["loss_weights"]
+    w_data = float(loss_w["lambda_data"])
+    w_haslach = float(loss_w["lambda_haslach"])
+    w_momentum = float(loss_w["lambda_momentum"])
+    w_initial = float(loss_w["lambda_initial"])
+    w_bc_base = float(loss_w["lambda_bc_base"])
+    w_bc_tip = float(loss_w["lambda_bc_tip"])
+
+    # Training Parameters
     epochs = int(cfg["training"]["epochs"])
-    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
+    time_steps = len(dataset["time"])
 
-    eq_name = cfg["physics"]["equation"]
-    k = float(cfg["physics"]["relaxation_modulus"])
-    c = float(cfg["physics"]["stress_scaling_factor"])
-    c1, c2, c3 = [float(val) for val in cfg["physics"]["c_constants"]]
-    b_val = cfg["physics"].get("body_force", [0.0, 0.0])
+    # Training
+    logger.info("Stratring PINN-MSG trainingin...")
 
-    pde_operator = OPERATOR_REGISTRY[eq_name]
-
-    w_momentum = float(cfg["training"]["loss_weights"]["lambda_momentum"])
-    w_bc = float(cfg["training"]["loss_weights"]["lambda_bc"])
-    w_ic = float(cfg["training"]["loss_weights"]["lambda_ic"])
-
-    logger.info("Starting Parametric Temporal Training...")
-
-    for epoch in range(1, epochs + 1):
-        pinn.train()
+    for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
+        # Initialisation
         optimizer.zero_grad()
 
-        # Domain Pass
-        x, t, F = train_points(cfg, device)
-        n_pts = x.shape[0]
-        b = torch.tensor(b_val, dtype=torch.float32, device=device).expand(n_pts, 2)
+        # Sampling
+        batch = sampler.sample_window(step_start=0, step_end=time_steps)
 
-        u, P, res_momentum = pde_operator(pinn, x, t, F, k, c1, c2, c3, c, b)
-        loss_momentum = r_loss(res_momentum)
+        preds_res = pinn(t=batch.t_res, X=batch.X_res)
+        u_pred_res = preds_res[:, :2]
+        S_pred_res = preds_res[:, 2:]
 
-        # Initial Condition
-        x_ic, t_ic, F_ic = initial_points(cfg, device)
-        u_ic_pred = pinn(x_ic, t_ic, F_ic)
-        loss_ic = ic_loss(u_ic_pred, torch.zeros_like(u_ic_pred))
+        # Data Loss
+        u_exact_flat = dataset["u"].reshape(-1, 2)
+        #S_exact_flat = dataset["S"].reshape(-1, 3)
+        loss_data = mse(u_pred_res, u_exact_flat) #+ mse(S_pred_res, S_exact_flat)
 
-        # Boundary Conditions
-        left, right, bottom, top = boundary_points(cfg, device)
-        x_l, t_l, F_l = left
-        x_r, t_r, F_r = right
-        x_b, t_b, F_b = bottom
-        x_top, t_top, F_top = top
+        # Viscoelastic Loss
+        haslash_residuals = haslach_constitutive_residual_2D(
+            u_pred=u_pred_res,
+            S_pred=S_pred_res,
+            X_ref=batch.X_res,
+            t=batch.t_res,
+            visco_model=visco_model,
+        )
+        loss_haslach = r_loss(haslash_residuals)
 
-        # Dirichlet Clamped Left Boundary
-        u_left_pred = pinn(x_l, t_l, F_l)
-        loss_bc_left = bc_loss(u_left_pred, torch.zeros_like(u_left_pred))
+        # Momentum Loss
+        pako_residual = pako_residual_2D(
+            u_pred=u_pred_res,
+            S_pred=S_pred_res,
+            X_ref=batch.X_res,
+            b=b,
+        )
+        loss_pako = r_loss(pako_residual)
 
-        # Roller Boundary on Bottom (u_y = 0)
-        u_bottom_pred = pinn(x_b, t_b, F_b)
-        loss_bc_bottom = bc_loss(
-            u_bottom_pred[:, 1:2], torch.zeros_like(u_bottom_pred[:, 1:2])
+        # Initial Loss
+        preds_ic = pinn(t=batch.t_ic, X=batch.X_ic)
+        u_ic_pred = preds_ic[:, :2]
+        S_ic_pred = preds_ic[:, 2:]
+        loss_ic = mse(u_ic_pred, batch.u_ic_target) + mse(S_ic_pred, batch.S_ic_target)
+
+        # Boundary Loss
+        preds_base = pinn(t=batch.t_base, X=batch.X_base)
+        u_base = preds_base[:, :2]
+        loss_bc_base = bc_loss(u_base, torch.zeros_like(preds_base[:, :2]))
+
+        preds_tip = pinn(t=batch.t_neu, X=batch.X_neu)
+        u_tip = preds_tip[:, :2]
+        S_tip = preds_tip[:, 2:]
+
+        kin = Kinematics(grad(u_tip, batch.X_neu))
+        S_tip_voigt = voigt_to_tensor(S_tip, is_shear=False)
+        P_tip = kin.compute_P(S_tip_voigt)
+        loss_bc_tip = traction_bc_loss(P_tip, batch.normals_neu, batch.trac_target)
+
+        # Total Loss
+        step_loss = (
+            w_data * loss_data
+            + w_haslach * loss_haslach
+            + w_momentum * loss_pako
+            + w_initial * loss_ic
+            + w_bc_base * loss_bc_base
+            + w_bc_tip * loss_bc_tip
         )
 
-        # Traction-Free Boundary on Top (P @ n_top = 0, where n_top = [0, 1]^T)
-        _, P_top, _ = pde_operator(
-            pinn, x_top, t_top, F_top, k, c1, c2, c3, c, torch.zeros_like(x_top)
-        )
-        n_top = torch.tensor([0.0, 1.0], device=device).expand(x_top.shape[0], 2)
-        loss_bc_top = traction_bc_loss(P_top, n_top, torch.zeros_like(x_top))
-
-        # Parametric Traction on Right Edge (P @ n_right = [F, 0]^T, where n_right = [1, 0]^T)
-        _, P_right, _ = pde_operator(
-            pinn, x_r, t_r, F_r, k, c1, c2, c3, c, torch.zeros_like(x_r)
-        )
-        n_right = torch.tensor([1.0, 0.0], device=device).expand(x_r.shape[0], 2)
-        traction_target_right = torch.cat([F_r, torch.zeros_like(F_r)], dim=-1)
-        loss_bc_right = traction_bc_loss(P_right, n_right, traction_target_right)
-
-        loss_bc = loss_bc_left + loss_bc_bottom + loss_bc_top + loss_bc_right
-
-        # Total Objective
-        loss = (w_momentum * loss_momentum) + (w_bc * loss_bc) + (w_ic * loss_ic)
-
-        loss.backward()
+        step_loss.backward()
         optimizer.step()
-        scheduler.step()
 
-        current_lr = scheduler.get_last_lr()[0]
+        # Checkpoint
+        metrics = {
+            "epoch": epoch,
+            "step_loss": step_loss.detach().item(),
+            "loss_data": loss_data.detach().item(),
+            "loss_haslach": loss_haslach.detach().item(),
+            "loss_pako": loss_pako.detach().item(),
+            "loss_ic": loss_ic.detach().item(),
+            "loss_bc_base": loss_bc_base.detach().item(),
+            "loss_bc_tip": loss_bc_tip.detach().item(),
+        }
 
-        if epoch % (epochs // 10) == 0 or epoch == 1:
-            logger.info(
-                f"Epoch {epoch:5d}/{epochs} | "
-                f"LR: {current_lr:.2e} | "
-                f"Total: {loss.item():.4e} | "
-                f"Momentum: {loss_momentum.item():.4e} | "
-                f"BC: {loss_bc.item():.4e} | "
-                f"IC: {loss_ic.item():.4e}"
+        metrics_logger.log(metrics)
+
+        if epoch % 50 == 0:
+            torch.save(
+                {
+                    "model_state_dict": pinn.state_dict(),
+                    "config": cfg,
+                },
+                checkpoint_dir / f"{model_name}_{epoch}.pt",
             )
-            torch.save(pinn.state_dict(), checkpoint_dir / f"{model_name}_{epoch}.pt")
 
-        metrics_logger.log(
-            {
-                "epoch": epoch,
-                "total_loss": loss.item(),
-                "loss_momentum": loss_momentum.item(),
-                "loss_bc": loss_bc.item(),
-                "loss_ic": loss_ic.item(),
-                "learning_rate": current_lr,
-            }
-        )
+    torch.save(
+        {
+            "model_state_dict": pinn.state_dict(),
+            "config": cfg,
+        },
+        output_dir / f"{model_name}.pt",
+    )
+    logger.info("-----------------------------Train Ended-----------------------------")
 
-    torch.save(pinn.state_dict(), out_dir / f"{model_name}.pt")
-    logger.info("Parametric temporal PINN training completed and model saved.")
+
+if __name__ == "__main__":
+    train()

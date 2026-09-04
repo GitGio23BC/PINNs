@@ -1,93 +1,55 @@
 import torch
 
-from src.utils import d_dt, div, grad, voigt_tensor, voigt_to_tensor
-
-from .constitutive import Material
-from .equations import (
-    HUGO,
-    FungEnergy_1D,
-    FungEnergy_2D,
-)
+from ..utils import d_dt, div, grad, voigt_tensor, voigt_to_tensor
+from .equations import HUGO, Kinematics
 
 
-def haslach_constitutive_evolution_1D(
-    pinn: torch.nn.Module,
-    x: torch.Tensor,
+def haslach_constitutive_residual_2D(
+    u_pred: torch.Tensor,
+    S_pred: torch.Tensor,
+    X_ref: torch.Tensor,
     t: torch.Tensor,
-    f: torch.Tensor,
-    k: float,
-    c1: float,
-    c: float,
+    visco_model: HUGO,
+) -> torch.Tensor:
+
+    grad_u = grad(u_pred, X_ref)
+    kin = Kinematics(grad_u)
+
+    E_voigt = voigt_tensor(kin.E, is_shear=False)
+
+    E_dot_voigt = d_dt(E_voigt, t)
+
+    S_voigt = S_pred
+
+    E_dot_pred = visco_model.haslach_equation(E_voigt, S_voigt)
+
+    residual = E_dot_voigt - E_dot_pred
+
+    return residual
+
+
+def pako_residual_2D(
+    u_pred: torch.Tensor,
+    S_pred: torch.Tensor,
+    X_ref: torch.Tensor,
     b: torch.Tensor,
-    S: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
 
-    x.requires_grad_(True)
-    t.requires_grad_(True)
-    f.requires_grad_(True)
+    grad_u = grad(u_pred, X_ref)
+    kin = Kinematics(grad_u)
+    S = (
+        voigt_to_tensor(S_pred, is_shear=False)
+        if S_pred.ndim == 2 and S_pred.shape[-1]
+        else S_pred
+    )
 
-    u = pinn(torch.cat([x, t, f]))
-    grad_u = grad(u, x)
+    P = kin.compute_P(S)
+    div_P = div(P, X_ref)
 
-    energy_func = FungEnergy_1D(c, c1)
-    costitutive_eq = HUGO(energy_func, k)
-
-    body = Material(grad_u)
-    E = body.E
-    E_t = d_dt(E, t)
-
-    Ev = voigt_tensor(E)
-    Ev_t = voigt_tensor(E_t)
-
-    Sv = costitutive_eq.inverse_haslach(Ev, Ev_t)
-    S = voigt_to_tensor(Sv)
-
-    P = body.compute_P(S)
-    div_P = div(P, x)
-
-    momentum_residue = div_P + b
-
-    return u, P, momentum_residue
-
-def haslach_constitutive_evolution_2D(
-    pinn: torch.nn.Module,
-    x: torch.Tensor,
-    t: torch.Tensor,
-    f: torch.Tensor,
-    k: float,
-    c1: float,
-    c2: float,
-    c3: float,
-    c: float,
-    b: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
-    x.requires_grad_(True)
-    t.requires_grad_(True)
-    f.requires_grad_(True)
-
-    u = pinn(x, t, f)
-    grad_u = grad(u, x)
-
-    energy_func = FungEnergy_2D(c, c1, c2, c3)
-    constitutive_eq = HUGO(energy_func, k)
-
-    body = Material(grad_u)
-    E = body.E
-    E_t = d_dt(E, t)
-
-    Sv = constitutive_eq.inverse_haslach(E, E_t)
-    S = voigt_to_tensor(Sv)
-
-    P = body.compute_P(S)
-    div_P = div(P, x)
-
-    momentum_residual = div_P + b
-
-    return u, P, momentum_residual
+    return div_P + b
 
 
 OPERATOR_REGISTRY = {
-    "viscoelastic_residual_Fung_1D": haslach_constitutive_evolution_1D,
-    "viscoelastic_residual_Fung_2D": haslach_constitutive_evolution_2D,
+    "viscoelastic_residual_Holzapfel_2D": haslach_constitutive_residual_2D,
+    "piola_kirchhoff_quasi_static_residual_2D": pako_residual_2D,
 }
