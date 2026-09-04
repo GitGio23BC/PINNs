@@ -2,12 +2,12 @@ import logging
 from pathlib import Path
 
 import torch
-from torch.optim import Adam
+from torch.optim import LBFGS, Adam
 from tqdm import tqdm
 
 from src.geometry import create_mesh
 from src.loader import PINNSampler, generate_ground_truth
-from src.loss import bc_loss, mse, r_loss, traction_bc_loss
+from src.loss import mse, r_loss, traction_bc_loss
 from src.models import BACKBONE_REGISTRY, ParametricPINN
 from src.physics import (
     HUGO,
@@ -86,11 +86,6 @@ def train():
         y_range=y_range,
         t_range=t_range,
     ).to(device)
-    optimizer = Adam(
-        pinn.parameters(),
-        lr=float(cfg["optimizer"]["lr"]),
-        weight_decay=float(cfg["optimizer"].get("weight_decay", 0.0)),
-    )
 
     # Physics Constants and Models
     p_cfg = cfg["physics"]
@@ -111,21 +106,12 @@ def train():
     w_data = float(loss_w["lambda_data"])
     w_haslach = float(loss_w["lambda_haslach"])
     w_momentum = float(loss_w["lambda_momentum"])
-    #w_initial = float(loss_w["lambda_initial"])
-    #w_bc_base = float(loss_w["lambda_bc_base"])
+    # w_initial = float(loss_w["lambda_initial"])
+    # w_bc_base = float(loss_w["lambda_bc_base"])
     w_bc_tip = float(loss_w["lambda_bc_tip"])
 
-    # Training Parameters
-    epochs = int(cfg["training"]["epochs"])
-    time_steps = len(dataset["time"])
-
-    # Training
-    logger.info("Stratring PINN-MSG trainingin...")
-
-    for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
-        # Initialisation
-        optimizer.zero_grad()
-
+    # Loss Function
+    def loss_compute():
         # Sampling
         batch = sampler.sample_window(step_start=0, step_end=time_steps)
 
@@ -135,8 +121,8 @@ def train():
 
         # Data Loss
         u_exact_flat = dataset["u"].reshape(-1, 2)
-        #S_exact_flat = dataset["S"].reshape(-1, 3)
-        loss_data = mse(u_pred_res, u_exact_flat) #+ mse(S_pred_res, S_exact_flat)
+        # S_exact_flat = dataset["S"].reshape(-1, 3)
+        loss_data = mse(u_pred_res, u_exact_flat)  # + mse(S_pred_res, S_exact_flat)
 
         # Viscoelastic Loss
         haslash_residuals = haslach_constitutive_residual_2D(
@@ -158,15 +144,15 @@ def train():
         loss_pako = r_loss(pako_residual)
 
         # Initial Loss
-        #preds_ic = pinn(t=batch.t_ic, X=batch.X_ic)
-        #u_ic_pred = preds_ic[:, :2]
-        #S_ic_pred = preds_ic[:, 2:]
-        #loss_ic = mse(u_ic_pred, batch.u_ic_target) + mse(S_ic_pred, batch.S_ic_target)
+        # preds_ic = pinn(t=batch.t_ic, X=batch.X_ic)
+        # u_ic_pred = preds_ic[:, :2]
+        # S_ic_pred = preds_ic[:, 2:]
+        # loss_ic = mse(u_ic_pred, batch.u_ic_target) + mse(S_ic_pred, batch.S_ic_target)
 
         # Boundary Loss
-        #preds_base = pinn(t=batch.t_base, X=batch.X_base)
-        #u_base = preds_base[:, :2]
-        #loss_bc_base = bc_loss(u_base, torch.zeros_like(preds_base[:, :2]))
+        # preds_base = pinn(t=batch.t_base, X=batch.X_base)
+        # u_base = preds_base[:, :2]
+        # loss_bc_base = bc_loss(u_base, torch.zeros_like(preds_base[:, :2]))
 
         preds_tip = pinn(t=batch.t_neu, X=batch.X_neu)
         u_tip = preds_tip[:, :2]
@@ -182,13 +168,36 @@ def train():
             w_data * loss_data
             + w_haslach * loss_haslach
             + w_momentum * loss_pako
-        #    + w_initial * loss_ic
-        #    + w_bc_base * loss_bc_base
+            #    + w_initial * loss_ic
+            #    + w_bc_base * loss_bc_base
             + w_bc_tip * loss_bc_tip
         )
 
+        return step_loss, loss_data, loss_haslach, loss_pako, loss_bc_tip
+
+    # Training Parameters
+    time_steps = len(dataset["time"])
+
+    # Training
+    logger.info("Stratring PINN-MSG trainingin...")
+
+    ## Adam
+    logger.info("Adam Phase")
+    adam_epochs = int(cfg["training"].get("adam_epochs", 100))
+    optimizer_adam = Adam(
+        pinn.parameters(),
+        lr=float(cfg["optimizer"]["lr"]),
+        weight_decay=float(cfg["optimizer"].get("weight_decay", 0.0)),
+    )
+
+    for epoch in tqdm(range(1, adam_epochs + 1), desc="Adam Epoch: "):
+        # Initialisation
+        optimizer_adam.zero_grad()
+
+        step_loss, loss_data, loss_haslach, loss_pako, loss_bc_tip = loss_compute()
+
         step_loss.backward()
-        optimizer.step()
+        optimizer_adam.step()
 
         # Checkpoint
         metrics = {
@@ -197,8 +206,8 @@ def train():
             "loss_data": loss_data.detach().item(),
             "loss_haslach": loss_haslach.detach().item(),
             "loss_pako": loss_pako.detach().item(),
-            #"loss_initial": loss_initial.detach().item(),
-            #"loss_bc_base": loss_bc_base.detach().item(),
+            # "loss_initial": loss_initial.detach().item(),
+            # "loss_bc_base": loss_bc_base.detach().item(),
             "loss_bc_tip": loss_bc_tip.detach().item(),
         }
 
@@ -210,8 +219,60 @@ def train():
                     "model_state_dict": pinn.state_dict(),
                     "config": cfg,
                 },
-                checkpoint_dir / f"{model_name}_{epoch}.pt",
+                checkpoint_dir / f"{model_name}_adam_{epoch}.pt",
             )
+
+    ## L-BFGS Phase
+    logger.info("L-BFGS Phase")
+    lbfgs_iters = int(cfg["training"].get("lbfgs_epochs", 50))
+    optimizer_lbfgs = LBFGS(
+        pinn.parameters(),
+        lr=float(cfg["optimizer"].get("lbfgs_lr", 0.5)),
+        max_iter=20,
+        max_eval=25,
+        tolerance_grad=1e-7,
+        tolerance_change=1e-9,
+        history_size=50,
+        line_search_fn="strong_wolfe",
+    )
+    global_epoch = adam_epochs
+
+    for _ in tqdm(range(1, lbfgs_iters + 1), desc="L-BFGS Phase"):
+        current_metrics = {
+            "epoch": 0.0,
+            "step_loss": 0.0,
+            "loss_data": 0.0,
+            "loss_haslach": 0.0,
+            "loss_pako": 0.0,
+            # "loss_initial":0.0,
+            # "loss_bc_base":0.0,
+            "loss_bc_tip": 0.0,
+        }
+
+        def closure():
+            optimizer_lbfgs.zero_grad()
+            loss, loss_data, loss_haslach, loss_pako, loss_bc_tip = loss_compute()
+            loss.backward()
+
+            current_metrics["loss"] = loss.detach().item()
+            current_metrics["loss_data"] = loss_data.detach().item()
+            current_metrics["loss_haslach"] = loss_haslach.detach().item()
+            current_metrics["loss_pako"] = loss_pako.detach().item()
+            current_metrics["loss_bc_tip"] = loss_bc_tip.detach().item()
+            return loss
+
+        optimizer_lbfgs.step(closure)
+        global_epoch += 1
+
+        metrics = {
+            "epoch": global_epoch,
+            "step_loss": current_metrics["loss"],
+            "loss_data": current_metrics["loss_data"],
+            "loss_haslach": current_metrics["loss_haslach"],
+            "loss_pako": current_metrics["loss_pako"],
+            "loss_bc_tip": current_metrics["loss_bc_tip"],
+        }
+        metrics_logger.log(metrics)
 
     torch.save(
         {

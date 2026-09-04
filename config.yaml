@@ -24,7 +24,7 @@ physics:
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "PINN-Ansatz"
+  model_name: "PINNAn-LBFGS"
   architecture: "ModMLP"
   node_in_dim: 7
   edge_in_dim: 6
@@ -55,7 +55,8 @@ domain:
 # ==========================================
 training:
   device: "cpu"
-  epochs: 100
+  adam_epochs: 2
+  lbfgs_epochs: 2
   loss_weights:
     lambda_data: 10.0
     lambda_haslach: 10.0
@@ -69,5 +70,6 @@ training:
 # ==========================================
 optimizer:
   name: "adam"
-  lr: 0.005
+  lr: 0.001
+  lbfgs_lr: 0.0005
   weight_decay: 0.0
