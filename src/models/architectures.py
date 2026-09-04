@@ -32,5 +32,13 @@ class ParametricPINN(nn.Module):
         t_norm = check_tensor(t_norm, N, X.device)
 
         in_features = torch.cat([t_norm, X_norm], dim=-1)
+        raw = self.backbone(in_features)
+        u_raw = raw[:, :2]
+        S_raw = raw[:, 2:]
 
-        return self.backbone(in_features)
+        X_coord = X[:, 0:1]
+        u_ansatz = t * X_coord * u_raw 
+
+        S_ansatz = t * S_raw
+
+        return torch.cat([u_ansatz, S_ansatz], dim=-1)

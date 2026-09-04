@@ -43,7 +43,6 @@ def train():
             "loss_data",
             "loss_haslach",
             "loss_pako",
-            "loss_ic",
             "loss_bc_base",
             "loss_bc_tip",
         ],
@@ -112,8 +111,8 @@ def train():
     w_data = float(loss_w["lambda_data"])
     w_haslach = float(loss_w["lambda_haslach"])
     w_momentum = float(loss_w["lambda_momentum"])
-    w_initial = float(loss_w["lambda_initial"])
-    w_bc_base = float(loss_w["lambda_bc_base"])
+    #w_initial = float(loss_w["lambda_initial"])
+    #w_bc_base = float(loss_w["lambda_bc_base"])
     w_bc_tip = float(loss_w["lambda_bc_tip"])
 
     # Training Parameters
@@ -159,15 +158,15 @@ def train():
         loss_pako = r_loss(pako_residual)
 
         # Initial Loss
-        preds_ic = pinn(t=batch.t_ic, X=batch.X_ic)
-        u_ic_pred = preds_ic[:, :2]
-        S_ic_pred = preds_ic[:, 2:]
-        loss_ic = mse(u_ic_pred, batch.u_ic_target) + mse(S_ic_pred, batch.S_ic_target)
+        #preds_ic = pinn(t=batch.t_ic, X=batch.X_ic)
+        #u_ic_pred = preds_ic[:, :2]
+        #S_ic_pred = preds_ic[:, 2:]
+        #loss_ic = mse(u_ic_pred, batch.u_ic_target) + mse(S_ic_pred, batch.S_ic_target)
 
         # Boundary Loss
-        preds_base = pinn(t=batch.t_base, X=batch.X_base)
-        u_base = preds_base[:, :2]
-        loss_bc_base = bc_loss(u_base, torch.zeros_like(preds_base[:, :2]))
+        #preds_base = pinn(t=batch.t_base, X=batch.X_base)
+        #u_base = preds_base[:, :2]
+        #loss_bc_base = bc_loss(u_base, torch.zeros_like(preds_base[:, :2]))
 
         preds_tip = pinn(t=batch.t_neu, X=batch.X_neu)
         u_tip = preds_tip[:, :2]
@@ -183,8 +182,8 @@ def train():
             w_data * loss_data
             + w_haslach * loss_haslach
             + w_momentum * loss_pako
-            + w_initial * loss_ic
-            + w_bc_base * loss_bc_base
+        #    + w_initial * loss_ic
+        #    + w_bc_base * loss_bc_base
             + w_bc_tip * loss_bc_tip
         )
 
@@ -198,8 +197,8 @@ def train():
             "loss_data": loss_data.detach().item(),
             "loss_haslach": loss_haslach.detach().item(),
             "loss_pako": loss_pako.detach().item(),
-            "loss_ic": loss_ic.detach().item(),
-            "loss_bc_base": loss_bc_base.detach().item(),
+            #"loss_initial": loss_initial.detach().item(),
+            #"loss_bc_base": loss_bc_base.detach().item(),
             "loss_bc_tip": loss_bc_tip.detach().item(),
         }
 
