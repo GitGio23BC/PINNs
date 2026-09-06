@@ -9,6 +9,7 @@ from ..geometry import Mesh
 class PINNBatch:
     t_res: torch.Tensor
     X_res: torch.Tensor
+    u_res: torch.Tensor
 
     t_ic: torch.Tensor
     X_ic: torch.Tensor
@@ -52,9 +53,11 @@ class PINNSampler:
         self,
         step_start: int,
         step_end: int,
+        delta: int = 1,
         n_continuous_points: int = 0,
     ) -> PINNBatch:
 
+        step_end = min(self.time.shape[0], step_end + delta)
         t_window = self.time[step_start:step_end]
         W = t_window.shape[0]
         N_nodes = self.nodes.shape[0]
@@ -86,6 +89,7 @@ class PINNSampler:
 
         X_res = X_res.clone().detach().requires_grad_(True)
         t_res = t_res.clone().detach().requires_grad_(True)
+        u_res = self.u[step_start:step_end].reshape(-1, 2).clone().detach()
 
         # Inital Condition Points
         X_ic = self.nodes.clone().detach()
@@ -106,13 +110,13 @@ class PINNSampler:
         ]
 
         X_neu_list, t_neu_list, n_neu_list, trac_neu_list = [], [], [], []
-        for idx_group, normal_vec in neu_groups:
-            k = idx_group.shape[0]
-            X_neu_list.append(self.nodes[idx_group].repeat(W, 1))
+        for node_idx_group, normal_vec in neu_groups:
+            k = node_idx_group.shape[0]
+            X_neu_list.append(self.nodes[node_idx_group].repeat(W, 1))
             t_neu_list.append(t_window.repeat_interleave(k).unsqueeze(-1))
             n_neu_list.append(normal_vec.expand(k * W, 2))
 
-            trac_group = self.trac_ext[step_start:step_end, idx_group, :].reshape(-1, 2)
+            trac_group = self.trac_ext[step_start:step_end, node_idx_group, :].reshape(-1, 2)
             trac_neu_list.append(trac_group)
 
         X_neu = torch.cat(X_neu_list, dim=0).clone().detach().requires_grad_(True)
@@ -123,6 +127,7 @@ class PINNSampler:
         return PINNBatch(
             t_res=t_res,
             X_res=X_res,
+            u_res=u_res,
             t_ic=t_ic,
             X_ic=X_ic,
             u_ic_target=u_ic_target,

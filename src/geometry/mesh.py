@@ -124,8 +124,8 @@ def create_mesh(
 
     left_nodes = row_indices * stride
     right_nodes = row_indices * stride + nx
-    bottom_nodes = col_indices[1:]
-    top_nodes = ny * stride + col_indices[1:]
+    bottom_nodes = col_indices[1:-1]
+    top_nodes = ny * stride + col_indices[1:-1]
 
     return Mesh(
         nodes=nodes,
