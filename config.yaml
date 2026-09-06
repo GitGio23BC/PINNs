@@ -1,46 +1,5 @@
-# ==========================================
-# EXPERIMENT IDENTIFICATION
-# ==========================================
 seed: 42
 output_dir: "./output"
-bulk: false
-
-# ==========================================
-# GLOBAL PHYSICS CONSTANTS
-# ==========================================
-physics:
-  equation: "viscoelastic_residual_Holzapfel_2D"
-  k_relax: 15.0
-  c: 0.88
-  c1: 13.0
-  c2: 13.0
-  c3: 0.0
-  area: 1.0
-  density: 1.0
-  body_force: [0.0, 0.0]
-  sigma_max: 1.0
-
-# ==========================================
-# MODEL CONFIGURATION
-# ==========================================
-model:
-  model_name: "PINNAn-LBFGS"
-  architecture: "ModMLP"
-  node_in_dim: 7
-  edge_in_dim: 6
-  latent_dim: 64
-  hidden_dim: 64
-  num_layers: 4
-  output_dim: 5
-
-# ==========================================
-# DATA & SPATIO-TEMPORAL DOMAIN
-# ==========================================
-data:
-  dataset_name: "ground_truth_2D.pt"
-  data_dir: "./data/synt"
-  batch_size: 1
-  num_workers: 0
 
 domain:
   x_range: [0.0, 1.0]
@@ -50,26 +9,41 @@ domain:
   ny: 10
   n_steps: 100
 
-# ==========================================
-# TRAINING CONFIGURATION
-# ==========================================
-training:
-  device: "cpu"
-  adam_epochs: 2
-  lbfgs_epochs: 2
-  loss_weights:
-    lambda_data: 10.0
-    lambda_haslach: 10.0
-    lambda_momentum: 10.0
-    lambda_initial: 0
-    lambda_bc_base: 0
-    lambda_bc_tip: 100.0
+data:
+  data_dir: "./data"
+  dataset_name: "ground_truth_2d.pt"
 
-# ==========================================
-# OPTIMIZER
-# ==========================================
+model:
+  name: "PINNAn"
+  architecture: "ModMLP"       
+  type: "ansatz_space"         
+  num_layers: 4
+  hidden_dim: 128
+
+physics:
+  c: 1.0
+  c1: 1.0
+  c2: 1.0
+  c3: 0.5
+  k_relax: 2.0
+  body_force: [0.0, 0.0]
+  sigma_max: 1.0
+
 optimizer:
-  name: "adam"
-  lr: 0.001
-  lbfgs_lr: 0.0005
+  lr: 1e-3
   weight_decay: 0.0
+  lbfgs_lr: 0.5
+
+training:
+  device: "cuda"               
+  method: "standard"           
+  adam_epochs: 100
+  lbfgs_epochs: 50
+  window_size: 10
+  loss_weights:
+    lambda_data: 1.0
+    lambda_haslach: 1.0
+    lambda_momentum: 1.0
+    lambda_initial: 10.0
+    lambda_bc_base: 10.0       
+    lambda_bc_tip: 10.0

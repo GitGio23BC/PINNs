@@ -11,18 +11,18 @@ import torch
 from src.geometry import create_mesh
 from src.loader import generate_ground_truth
 from src.loss import rl2e
-from src.models import BACKBONE_REGISTRY, ParametricPINN
+from src.models import build_model
 from src.physics import (
     HUGO,
     HolzapfelEnergy_2D,
+    Kinematics,
     haslach_constitutive_residual_2D,
     pako_residual_2D,
 )
-from src.utils import init_logging, load_config
+from src.utils import grad, init_logging, load_config, voigt_to_tensor
 
 
 def test(model_path: Path | None = None):
-    # Logging and initialisation
     init_logging()
     logger = logging.getLogger(__name__)
 
@@ -31,13 +31,12 @@ def test(model_path: Path | None = None):
     output_dir = Path(cfg.get("output_dir", "./output"))
 
     if model_path is None:
-        model_path = output_dir / f"{cfg['model']['model_name']}.pt"
+        model_path = output_dir / f"{cfg['model'].get('name', 'PINN_std')}.pt"
     model_name = model_path.stem
 
-    # Domain and Mesh
+    # 1. Mesh Construction
     x_range = cfg["domain"]["x_range"]
     y_range = cfg["domain"]["y_range"]
-    t_range = cfg["domain"]["t_range"]
     nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
 
     mesh = create_mesh(
@@ -48,8 +47,9 @@ def test(model_path: Path | None = None):
         device=device,
     )
     nodes = mesh.nodes
+    right_nodes = mesh.right_nodes
 
-    # Ground Truth Dataset
+    # 2. Ground Truth Dataset
     data_dir = Path(cfg["data"]["data_dir"])
     dataset_path = data_dir / cfg["data"]["dataset_name"]
 
@@ -60,31 +60,32 @@ def test(model_path: Path | None = None):
 
     time_grid = dataset["time"].to(device)
     u_exact_traj = dataset["u"].to(device)
+    S_exact_traj = dataset["S"].to(device)
     trac_ext_traj = dataset["trac_ext"].to(device)
     time_steps = len(time_grid)
 
-    # Instantiate Model and Load Checkpoint
-    arch_cls = BACKBONE_REGISTRY[cfg["model"]["architecture"]]
-    backbone = arch_cls(
-        in_dim=3,
-        hidden_layers=int(cfg["model"]["num_layers"]),
-        hidden_dim=int(cfg["model"]["hidden_dim"]),
-        out_dim=5,
-    )
-    pinn = ParametricPINN(
-        backbone=backbone,
-        x_range=x_range,
-        y_range=y_range,
-        t_range=t_range,
-    ).to(device)
+    # Precompute mid-plane node indices
+    x_mid = (x_range[0] + x_range[1]) / 2.0
+    nodes_x = nodes[:, 0].cpu().numpy()
+    mid_plane_np = np.where(
+        np.isclose(nodes_x, x_mid, atol=(x_range[1] - x_range[0]) / (2 * nx))
+    )[0]
+    if len(mid_plane_np) == 0:
+        mid_plane_np = np.array([nodes.shape[0] // 2])
+    mid_plane_idx = torch.tensor(mid_plane_np, dtype=torch.long, device=device)
+    mid_plane_idx_cpu = mid_plane_idx.cpu()
 
+    # 3. Model Architecture Instantiation from Checkpoint
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    saved_cfg = checkpoint.get("config", cfg)
+    pinn = build_model(saved_cfg, device=device)
+
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     pinn.load_state_dict(state_dict)
     pinn.eval()
     logger.info(f"Loaded trained PINN model from {model_path}")
 
-    # Physics Constants and Constitutive Model
+    # 4. Physics and Constitutive Models
     p_cfg = cfg["physics"]
     visco_model = HUGO(
         HolzapfelEnergy_2D(
@@ -98,19 +99,22 @@ def test(model_path: Path | None = None):
     )
     b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float32)
 
-    # Evaluation Trajectory Containers
+    # 5. Trajectory Containers
     all_u_pred = []
     all_S_pred = []
     all_haslach_res = []
     all_pako_res = []
+    tip_trac_pred_traj = []
+    tip_trac_target_traj = []
+    mid_E11_pred = []
 
-    logger.info("Starting PINN continuous trajectory evaluation...")
+    logger.info("Starting continuous trajectory evaluation...")
 
     for t_step in range(time_steps):
         t_val = time_grid[t_step].item()
         num_nodes = nodes.shape[0]
 
-        # Space-time collocation tensors with autograd enabled for continuous PDE residuals
+        # Domain interior residuals and states
         t_in = torch.full((num_nodes, 1), t_val, device=device, requires_grad=True)
         X_in = nodes.clone().detach().requires_grad_(True)
 
@@ -118,7 +122,6 @@ def test(model_path: Path | None = None):
         u_pred = predictions[:, :2]
         S_pred = predictions[:, 2:]
 
-        # Constitutive and Momentum Balance Residuals
         haslach_res = haslach_constitutive_residual_2D(
             u_pred=u_pred,
             S_pred=S_pred,
@@ -139,20 +142,54 @@ def test(model_path: Path | None = None):
         all_haslach_res.append(haslach_res.detach().cpu())
         all_pako_res.append(pako_res.detach().cpu())
 
-    # Metrics computation
-    u_pred_traj = torch.stack(all_u_pred, dim=0)  # Shape: (T, N, 2)
+        # Boundary Traction evaluation at the Tip (X = width)
+        t_tip = torch.full((len(right_nodes), 1), t_val, device=device)
+        X_tip = nodes[right_nodes].clone().detach().requires_grad_(True)
+
+        preds_tip = pinn(t=t_tip, X=X_tip)
+        u_tip = preds_tip[:, :2]
+        S_tip = preds_tip[:, 2:]
+
+        kin_tip = Kinematics(grad(u_tip, X_tip))
+        S_tip_mat = voigt_to_tensor(S_tip, is_shear=False)
+        P_tip = kin_tip.compute_P(S_tip_mat)
+
+        pred_traction_x = P_tip[:, 0, 0].detach().cpu().mean().item()
+        exact_traction_x = trac_ext_traj[t_step, right_nodes, 0].cpu().mean().item()
+
+        tip_trac_pred_traj.append(pred_traction_x)
+        tip_trac_target_traj.append(exact_traction_x)
+
+        # Mid-plane Green-Lagrange strain E_11 evaluation
+        X_mid = nodes[mid_plane_idx].clone().detach().requires_grad_(True)
+        t_mid = torch.full((len(mid_plane_idx), 1), t_val, device=device)
+        u_mid = pinn(t=t_mid, X=X_mid)[:, :2]
+        kin_mid = Kinematics(grad(u_mid, X_mid))
+        mid_E11_pred.append(kin_mid.E[:, 0, 0].detach().cpu().mean().item())
+
+    # Error Metrics
+    u_pred_traj = torch.stack(all_u_pred, dim=0)
     u_exact_cpu = u_exact_traj.cpu()
 
-    # Step-wise relative L2 errors
     step_l2_errors = [
-        rl2e(u_pred_traj[step], u_exact_cpu[step]).item()
-        for step in range(time_steps)
+        rl2e(u_pred_traj[step], u_exact_cpu[step]).item() for step in range(time_steps)
     ]
     final_l2_error = step_l2_errors[-1]
     mean_trajectory_l2 = float(np.mean(step_l2_errors))
 
-    mean_haslach = torch.cat(all_haslach_res).abs().mean().item()
-    mean_pako = torch.cat(all_pako_res).abs().mean().item()
+    cat_haslach = torch.cat(all_haslach_res).abs()
+    cat_pako = torch.cat(all_pako_res).abs()
+
+    mean_haslach = (
+        cat_haslach[torch.isfinite(cat_haslach)].mean().item()
+        if torch.isfinite(cat_haslach).any()
+        else float("nan")
+    )
+    mean_pako = (
+        cat_pako[torch.isfinite(cat_pako)].mean().item()
+        if torch.isfinite(cat_pako).any()
+        else float("nan")
+    )
 
     logger.info("=" * 60)
     logger.info(f"Evaluation Results for: {model_path.name}")
@@ -162,71 +199,64 @@ def test(model_path: Path | None = None):
     logger.info(f"Trajectory Mean Momentum Residual:       {mean_pako:.6e}")
     logger.info("=" * 60)
 
-    # Trajectory Boundary Condition Data Extraction
     t_plot = time_grid.cpu().numpy()
-    left_nodes_idx = mesh.left_nodes.cpu()
-    right_nodes_idx = mesh.right_nodes.cpu()
-
-    base_u_norm_traj = [
-        torch.linalg.norm(u[left_nodes_idx], dim=-1).mean().item()
-        for u in all_u_pred
+    mid_S11_pred = [S[mid_plane_idx_cpu, 0].mean().item() for S in all_S_pred]
+    mid_S11_exact = [
+        S_exact_traj[t, mid_plane_idx, 0].cpu().mean().item() for t in range(time_steps)
     ]
-    tip_S11_pred_traj = [S[right_nodes_idx, 0].mean().item() for S in all_S_pred]
-    tip_S11_target_traj = [
-        trac_ext_traj[t, right_nodes_idx, 0].mean().item()
-        for t in range(time_steps)
+    mid_E11_exact = [
+        dataset["E"][t, mid_plane_idx, 0].cpu().mean().item() for t in range(time_steps)
     ]
 
-    # Plotting
     fig, axes = plt.subplots(2, 3, figsize=(18, 9))
     fig.suptitle(
-        f"PINN Evaluation: {model_path.name} | Final L2 Error: {final_l2_error:.2%}",
+        f"PINN Benchmark Evaluation: {model_path.name} | Final L2 Error: {final_l2_error:.2%}",
         fontsize=13,
         fontweight="bold",
     )
 
-    # Subplot 1: Training Convergence
+    # Subplot 1: Convergence History
     metrics_path = output_dir / f"metrics_{model_name}.csv"
     if metrics_path.exists():
         df = pd.read_csv(metrics_path)
-        axes[0, 0].plot(df["step_loss"], "k-", label="Total Loss", linewidth=1.5)
-        if "loss_data" in df.columns:
-            axes[0, 0].plot(df["loss_data"], "c-.", label="Data Loss", alpha=0.7)
-        if "loss_haslach" in df.columns:
-            axes[0, 0].plot(df["loss_haslach"], "r--", label="Constitutive Loss", alpha=0.7)
-        if "loss_pako" in df.columns:
-            axes[0, 0].plot(df["loss_pako"], "b--", label="Momentum Loss", alpha=0.7)
-        if "loss_bc_base" in df.columns:
-            axes[0, 0].plot(df["loss_bc_base"], "g:", label="BC Base Loss", alpha=0.7)
-        if "loss_bc_tip" in df.columns:
-            axes[0, 0].plot(df["loss_bc_tip"], "m:", label="BC Traction Loss", alpha=0.7)
+        for col, style, label in [
+            ("step_loss", "k-", "Total Loss"),
+            ("loss_data", "c-.", "Data Loss"),
+            ("loss_haslach", "r--", "Constitutive Loss"),
+            ("loss_pako", "b--", "Momentum Loss"),
+            ("loss_ic", "y-.", "IC Loss"),
+            ("loss_bc_tip", "m:", "BC Traction Loss"),
+        ]:
+            if col in df.columns:
+                axes[0, 0].plot(df[col], style, label=label, alpha=0.8)
         axes[0, 0].set_yscale("log")
-        axes[0, 0].set_title("Training Loss Convergence")
-        axes[0, 0].set_xlabel("Epoch")
+        axes[0, 0].set_title("Training Convergence History")
+        axes[0, 0].set_xlabel("Logged Step / Epoch")
         axes[0, 0].set_ylabel("Loss (Log Scale)")
         axes[0, 0].legend()
         axes[0, 0].grid(True, which="both", ls="--", alpha=0.3)
     else:
         axes[0, 0].text(0.5, 0.5, "metrics.csv not found", ha="center", va="center")
 
-    # Subplot 2: Final Deformed State at t_final
+    # Subplot 2: Deformed Mesh at Peak Load
+    mid_step = time_steps // 2
     x_nodes_np = mesh.nodes.cpu().numpy()
-    u_final_pred = all_u_pred[-1].numpy()
-    u_final_exact = u_exact_cpu[-1].numpy()
-    u_mag = np.linalg.norm(u_final_pred, axis=-1)
+    u_mid_pred = all_u_pred[mid_step].numpy()
+    u_mid_exact = u_exact_cpu[mid_step].numpy()
+    u_mid_mag = np.linalg.norm(u_mid_pred, axis=-1)
 
     sc = axes[0, 1].scatter(
-        x_nodes_np[:, 0] + u_final_pred[:, 0],
-        x_nodes_np[:, 1] + u_final_pred[:, 1],
-        c=u_mag,
+        x_nodes_np[:, 0] + u_mid_pred[:, 0],
+        x_nodes_np[:, 1] + u_mid_pred[:, 1],
+        c=u_mid_mag,
         cmap="viridis",
         s=40,
         label="PINN Deformed",
     )
     plt.colorbar(sc, ax=axes[0, 1], label=r"$\|\mathbf{u}\|$ [m]")
     axes[0, 1].scatter(
-        x_nodes_np[:, 0] + u_final_exact[:, 0],
-        x_nodes_np[:, 1] + u_final_exact[:, 1],
+        x_nodes_np[:, 0] + u_mid_exact[:, 0],
+        x_nodes_np[:, 1] + u_mid_exact[:, 1],
         facecolors="none",
         edgecolors="red",
         s=40,
@@ -236,61 +266,73 @@ def test(model_path: Path | None = None):
     axes[0, 1].scatter(
         x_nodes_np[:, 0], x_nodes_np[:, 1], c="gray", alpha=0.3, s=15, label="Reference"
     )
-    axes[0, 1].set_title("Final Deformed State ($t = T$)")
+    axes[0, 1].set_title(f"Deformed Mesh State ($t = {t_plot[mid_step]:.2f}$ s)")
     axes[0, 1].set_xlabel("X [m]")
     axes[0, 1].set_ylabel("Y [m]")
     axes[0, 1].legend()
     axes[0, 1].grid(True, alpha=0.3)
 
-    # Subplot 3: Momentum Balance Residual Norm Distribution
+    # Subplot 3: Momentum Residual Norm
     res_norm = torch.linalg.norm(torch.cat(all_pako_res), dim=-1).numpy()
-    axes[0, 2].hist(res_norm, bins=30, color="crimson", alpha=0.7, edgecolor="black")
-    axes[0, 2].set_yscale("log")
+    res_norm = res_norm[np.isfinite(res_norm)]
+    if len(res_norm) > 0:
+        axes[0, 2].hist(
+            res_norm, bins=30, color="crimson", alpha=0.7, edgecolor="black"
+        )
+        axes[0, 2].set_yscale("log")
+    else:
+        axes[0, 2].text(
+            0.5, 0.5, "Residuals contain NaNs", ha="center", va="center", color="red"
+        )
     axes[0, 2].set_title("Momentum Residual Distribution")
     axes[0, 2].set_xlabel(r"$\|\mathbf{R}_{\mathrm{mom}}\|$")
     axes[0, 2].set_ylabel("Count (Log Scale)")
     axes[0, 2].grid(True, alpha=0.3)
 
-    # Subplot 4: Base Clamped Condition Enforcement across Time
+    # Subplot 4: Hysteresis Loop
+    axes[1, 0].plot(mid_E11_pred, mid_S11_pred, "b-", linewidth=1.8, label="PINN Loop")
     axes[1, 0].plot(
-        t_plot,
-        base_u_norm_traj,
-        "b-",
-        linewidth=1.8,
-        label=r"Predicted $\|\mathbf{u}(X=0)\|$",
+        mid_E11_exact, mid_S11_exact, "k--", linewidth=1.5, label="Ground Truth Loop"
     )
-    axes[1, 0].axhline(
-        0.0, color="k", linestyle="--", alpha=0.7, label="Exact Target (0.0)"
-    )
-    axes[1, 0].set_title("Clamped Base Boundary ($X = 0$)")
-    axes[1, 0].set_xlabel("Time $t$ [s]")
-    axes[1, 0].set_ylabel("Displacement Norm [m]")
+    axes[1, 0].set_title(r"Stress–Strain Hysteresis Loop ($X \approx 0.5$)")
+    axes[1, 0].set_xlabel(r"Green–Lagrange Strain $E_{11}$ [-]")
+    axes[1, 0].set_ylabel(r"Second Piola Stress $S_{11}$ [Pa]")
     axes[1, 0].legend()
     axes[1, 0].grid(True, linestyle="--", alpha=0.3)
 
-    # Subplot 5: Traction Enforcement at Tip across Time
+    # Subplot 5: Boundary Traction Enforcement
     axes[1, 1].plot(
-        t_plot, tip_S11_pred_traj, "r-", linewidth=1.8, label=r"Predicted $S_{11}(X=1)$"
+        t_plot,
+        tip_trac_pred_traj,
+        "r-",
+        linewidth=1.8,
+        label=r"Predicted Traction $P_{11}$",
     )
     axes[1, 1].plot(
         t_plot,
-        tip_S11_target_traj,
+        tip_trac_target_traj,
         "k--",
         linewidth=1.5,
-        label=r"Target Traction $S_{11}$",
+        label=r"Applied Traction $t_{\mathrm{ext}}$",
     )
-    axes[1, 1].set_title("Tip Stress Tracking ($X = 1$)")
+    axes[1, 1].set_title("Boundary Traction Tracking ($X = 1$)")
     axes[1, 1].set_xlabel("Time $t$ [s]")
-    axes[1, 1].set_ylabel("Stress $S_{11}$ [Pa]")
+    axes[1, 1].set_ylabel(r"Nominal Traction $P_{11}$ [Pa]")
     axes[1, 1].legend()
     axes[1, 1].grid(True, linestyle="--", alpha=0.3)
 
-    # Subplot 6: Constitutive Haslach Residual Norm Distribution
+    # Subplot 6: Haslach Residual Norm
     haslach_norm = torch.linalg.norm(torch.cat(all_haslach_res), dim=-1).numpy()
-    axes[1, 2].hist(
-        haslach_norm, bins=30, color="darkorange", alpha=0.7, edgecolor="black"
-    )
-    axes[1, 2].set_yscale("log")
+    haslach_norm = haslach_norm[np.isfinite(haslach_norm)]
+    if len(haslach_norm) > 0:
+        axes[1, 2].hist(
+            haslach_norm, bins=30, color="darkorange", alpha=0.7, edgecolor="black"
+        )
+        axes[1, 2].set_yscale("log")
+    else:
+        axes[1, 2].text(
+            0.5, 0.5, "Residuals contain NaNs", ha="center", va="center", color="red"
+        )
     axes[1, 2].set_title("Haslach Constitutive Residual Distribution")
     axes[1, 2].set_xlabel(r"$\|\mathbf{R}_{\mathrm{visco}}\|$")
     axes[1, 2].set_ylabel("Count (Log Scale)")
@@ -309,7 +351,10 @@ if __name__ == "__main__":
     if cfg.get("bulk", False):
         pt_files = [p for p in out_dir.glob("*.pt") if "checkpoints" not in str(p)]
         for model_file in pt_files:
-            test(model_file)
+            try:
+                test(model_file)
+            except Exception as e:
+                print(f"Error evaluating {model_file.stem}: {e}")
     else:
         Tk().withdraw()
         selected_model = askopenfilename(initialdir=out_dir)
