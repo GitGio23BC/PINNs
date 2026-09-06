@@ -15,7 +15,7 @@ def haslach_constitutive_residual_2D(
     grad_u = grad(u_pred, X_ref)
     kin = Kinematics(grad_u)
 
-    E_voigt = voigt_tensor(kin.E, is_shear=False)
+    E_voigt = voigt_tensor(kin.E, is_shear=True)
 
     E_dot_voigt = d_dt(E_voigt, t)
 

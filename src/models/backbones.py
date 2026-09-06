@@ -9,7 +9,7 @@ class MLP(nn.Module):
         hidden_layers: int,
         hidden_dim: int,
         out_dim: int,
-        use_layer_norm: bool = True,
+        use_layer_norm: bool = False,
         activation: type[nn.Module] = nn.Tanh,
     ) -> None:
         super().__init__()
