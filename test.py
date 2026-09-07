@@ -34,7 +34,7 @@ def test(model_path: Path | None = None):
         model_path = output_dir / f"{cfg['model'].get('name', 'PINN_std')}.pt"
     model_name = model_path.stem
 
-    # 1. Mesh Construction
+    # Mesh
     x_range = cfg["domain"]["x_range"]
     y_range = cfg["domain"]["y_range"]
     nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
@@ -49,7 +49,7 @@ def test(model_path: Path | None = None):
     nodes = mesh.nodes
     right_nodes = mesh.right_nodes
 
-    # 2. Ground Truth Dataset
+    # Data
     data_dir = Path(cfg["data"]["data_dir"])
     dataset_path = data_dir / cfg["data"]["dataset_name"]
 
@@ -64,7 +64,7 @@ def test(model_path: Path | None = None):
     trac_ext_traj = dataset["trac_ext"].to(device)
     time_steps = len(time_grid)
 
-    # Precompute mid-plane node indices
+    # Indeces
     x_mid = (x_range[0] + x_range[1]) / 2.0
     nodes_x = nodes[:, 0].cpu().numpy()
     mid_plane_np = np.where(
@@ -75,7 +75,7 @@ def test(model_path: Path | None = None):
     mid_plane_idx = torch.tensor(mid_plane_np, dtype=torch.long, device=device)
     mid_plane_idx_cpu = mid_plane_idx.cpu()
 
-    # 3. Model Architecture Instantiation from Checkpoint
+    # Model
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     saved_cfg = checkpoint.get("config", cfg)
     pinn = build_model(saved_cfg, device=device)
@@ -85,7 +85,7 @@ def test(model_path: Path | None = None):
     pinn.eval()
     logger.info(f"Loaded trained PINN model from {model_path}")
 
-    # 4. Physics and Constitutive Models
+    # Physics
     p_cfg = cfg["physics"]
     visco_model = HUGO(
         HolzapfelEnergy_2D(
@@ -99,7 +99,7 @@ def test(model_path: Path | None = None):
     )
     b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float32)
 
-    # 5. Trajectory Containers
+    # Trajectory
     all_u_pred = []
     all_S_pred = []
     all_haslach_res = []
@@ -114,7 +114,7 @@ def test(model_path: Path | None = None):
         t_val = time_grid[t_step].item()
         num_nodes = nodes.shape[0]
 
-        # Domain interior residuals and states
+        ## Interior residuals
         t_in = torch.full((num_nodes, 1), t_val, device=device, requires_grad=True)
         X_in = nodes.clone().detach().requires_grad_(True)
 
@@ -142,7 +142,7 @@ def test(model_path: Path | None = None):
         all_haslach_res.append(haslach_res.detach().cpu())
         all_pako_res.append(pako_res.detach().cpu())
 
-        # Boundary Traction evaluation at the Tip (X = width)
+        ## Boundary Traction
         t_tip = torch.full((len(right_nodes), 1), t_val, device=device)
         X_tip = nodes[right_nodes].clone().detach().requires_grad_(True)
 
@@ -160,14 +160,14 @@ def test(model_path: Path | None = None):
         tip_trac_pred_traj.append(pred_traction_x)
         tip_trac_target_traj.append(exact_traction_x)
 
-        # Mid-plane Green-Lagrange strain E_11 evaluation
+        # Mid-plane strain
         X_mid = nodes[mid_plane_idx].clone().detach().requires_grad_(True)
         t_mid = torch.full((len(mid_plane_idx), 1), t_val, device=device)
         u_mid = pinn(t=t_mid, X=X_mid)[:, :2]
         kin_mid = Kinematics(grad(u_mid, X_mid))
         mid_E11_pred.append(kin_mid.E[:, 0, 0].detach().cpu().mean().item())
 
-    # Error Metrics
+    # Metrics
     u_pred_traj = torch.stack(all_u_pred, dim=0)
     u_exact_cpu = u_exact_traj.cpu()
 
@@ -353,7 +353,7 @@ if __name__ == "__main__":
         for model_file in pt_files:
             try:
                 test(model_file)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"Error evaluating {model_file.stem}: {e}")
     else:
         Tk().withdraw()
