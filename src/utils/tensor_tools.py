@@ -120,19 +120,17 @@ def grad(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     return torch.stack(rows, dim=1)
 
 
-def d_dt(E: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    d = E.shape[-1]
-    rows = []
-    for i in range(d):
-        cols = []
-        for j in range(d):
-            dE_ij_dt = torch.autograd.grad(
-                E[:, i, j],
-                t,
-                grad_outputs=torch.ones_like(E[:, i, j]),
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            cols.append(dE_ij_dt)
-        rows.append(torch.cat(cols, dim=-1))
-    return torch.stack(rows, dim=1)
+def d_dt(E_voigt: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    E_dot_components = []
+    for i in range(3):
+        dE_i = torch.autograd.grad(
+            E_voigt[:, i],
+            t,
+            grad_outputs=torch.ones_like(E_voigt[:, i]),
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+        E_dot_components.append(dE_i)
+
+    E_dot_voigt = torch.cat(E_dot_components, dim=-1)
+    return E_dot_voigt
