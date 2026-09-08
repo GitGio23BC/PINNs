@@ -24,7 +24,7 @@ class MLP(nn.Module):
         layers = [nn.Linear(hidden_dim, out_dim)]
 
         if use_layer_norm:
-            layers.append(nn.LayerNorm(out_dim)) # type: ignore
+            layers.append(nn.LayerNorm(out_dim))  # type: ignore
 
         self.output_layer = nn.Sequential(*layers)
 

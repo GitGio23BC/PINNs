@@ -22,7 +22,7 @@ def r_loss(residual: torch.Tensor) -> torch.Tensor:
 def traction_bc_loss(
     P: torch.Tensor, n_normal: torch.Tensor, g_traction: torch.Tensor
 ) -> torch.Tensor:
-    traction_pred = P @ n_normal.unsqueeze(-1)
+    traction_pred = (P @ n_normal.unsqueeze(-1)).squeeze(-1)
     return mse(traction_pred, g_traction)
 
 
