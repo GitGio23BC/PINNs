@@ -225,6 +225,7 @@ def test(model_path: Path | None = None):
             ("loss_haslach", "r--", "Constitutive Loss"),
             ("loss_pako", "b--", "Momentum Loss"),
             ("loss_ic", "y-.", "IC Loss"),
+            ("loss_bc_base", "m-:", "BC Base Loss"),
             ("loss_bc_tip", "m:", "BC Traction Loss"),
         ]:
             if col in df.columns:
