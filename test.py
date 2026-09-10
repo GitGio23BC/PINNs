@@ -350,7 +350,7 @@ if __name__ == "__main__":
     cfg = load_config("config.yaml")
     out_dir = Path(cfg["output_dir"])
     if cfg.get("bulk", False):
-        pt_files = [p for p in out_dir.glob("*.pt") if "checkpoints" not in str(p)]
+        pt_files = [p for p in out_dir.parent.rglob("*.pt") if "checkpoints" not in str(p)]
         for model_file in pt_files:
             try:
                 test(model_file)

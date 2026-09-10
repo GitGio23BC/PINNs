@@ -1,4 +1,0 @@
-model_name,time_latency_[ms/step]
-PINN_curr,0.8201779995579273
-PINN_s2s,0.7537619990762323
-PINN_std,0.8006619999650866
