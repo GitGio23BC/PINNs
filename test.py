@@ -28,7 +28,7 @@ def test(model_path: Path | None = None):
 
     cfg = load_config("config.yaml")
     device = torch.device(cfg["training"].get("device", "cpu"))
-    output_dir = Path(cfg.get("output_dir", "./output"))
+    output_dir = model_path.parent if model_path is not None else Path(cfg["output_dir"])
 
     if model_path is None:
         model_path = output_dir / f"{cfg['model'].get('name', 'PINN_std')}.pt"
@@ -225,7 +225,7 @@ def test(model_path: Path | None = None):
             ("loss_haslach", "r--", "Constitutive Loss"),
             ("loss_pako", "b--", "Momentum Loss"),
             ("loss_ic", "y-.", "IC Loss"),
-            ("loss_bc_base", "m-:", "BC Base Loss"),
+            ("loss_bc_base", "m-", "BC Base Loss"),
             ("loss_bc_tip", "m:", "BC Traction Loss"),
         ]:
             if col in df.columns:
@@ -350,7 +350,7 @@ if __name__ == "__main__":
     cfg = load_config("config.yaml")
     out_dir = Path(cfg["output_dir"])
     if cfg.get("bulk", False):
-        pt_files = [p for p in out_dir.glob("*.pt") if "checkpoints" not in str(p)]
+        pt_files = [p for p in out_dir.parent.rglob("*.pt") if "checkpoints" not in str(p)]
         for model_file in pt_files:
             try:
                 test(model_file)
