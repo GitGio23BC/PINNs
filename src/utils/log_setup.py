@@ -36,6 +36,23 @@ def init_logging(level: str | None = None) -> None:
     root.addHandler(ch)
     """
 
+
 def load_config(config_path: str | Path = "config.yaml") -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def update_config(config_path: str | Path, keys: list[str], value) -> None:
+    config_path = Path(config_path)
+
+    with config_path.open("r", encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+
+    current = config
+    for key in keys[:-1]:
+        current = current[key]
+
+    current[keys[-1]] = value
+
+    with config_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False)

@@ -35,6 +35,10 @@ class Mesh:
     right_nodes: torch.Tensor
     bottom_nodes: torch.Tensor
     top_nodes: torch.Tensor
+    left_normals: torch.Tensor
+    right_normals: torch.Tensor
+    bottom_normals: torch.Tensor
+    top_normals: torch.Tensor
 
     @property
     def n_nodes(self) -> int:
@@ -127,6 +131,11 @@ def create_mesh(
     bottom_nodes = col_indices[1:-1]
     top_nodes = ny * stride + col_indices[1:-1]
 
+    left_normals = torch.tensor([-1.0, 0.0], device=device).expand(len(left_nodes), 2)
+    right_normals = torch.tensor([1.0, 0.0], device=device).expand(len(right_nodes), 2)
+    bottom_normals = torch.tensor([0.0, -1.0], device=device).expand(len(bottom_nodes), 2)
+    top_normals = torch.tensor([0.0, 1.0], device=device).expand(len(top_nodes), 2)
+
     return Mesh(
         nodes=nodes,
         elements=elements,
@@ -135,4 +144,8 @@ def create_mesh(
         right_nodes=right_nodes,
         bottom_nodes=bottom_nodes,
         top_nodes=top_nodes,
+        left_normals = left_normals,
+        right_normals = right_normals,
+        bottom_normals = bottom_normals,
+        top_normals = top_normals,
     )

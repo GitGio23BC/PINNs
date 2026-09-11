@@ -164,7 +164,7 @@ class MeshGraphNet(nn.Module):
         latent_dim: int = 128,
         hidden_dim: int = 128,
         num_layers: int = 15,
-        output_dim: int = 2,
+        output_dim: int = 5,
         activation: type[nn.Module] = nn.SiLU,
     ) -> None:
         super().__init__()
@@ -202,3 +202,16 @@ class MeshGraphNet(nn.Module):
         latent_nodes, _ = self.processor(latent_nodes, latent_edges, senders, receivers)
 
         return self.decoder(latent_nodes)
+
+
+class MeshGraphNetAn(MeshGraphNet):
+    def forward(self, graph: Graph) -> torch.Tensor:
+        raw = super().forward(graph)
+        u_raw = raw[:, :2]
+        S_raw = raw[:, 2:]
+
+        X_coord = graph.mesh_nodes[:, 0:1]
+        u_ansatz = X_coord * u_raw
+
+        return torch.cat([u_ansatz, S_raw], dim=-1)
+

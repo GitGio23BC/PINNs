@@ -84,6 +84,17 @@ def voigt_to_tensor(
 
 
 def div(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    if x.dim() == 1 and None: # TO DO #
+        nx, ny = x
+        y_grid = y.view(int(ny.item()) + 1, int(nx.item() + 1), 2)
+        dx = dy = 1
+
+        div_y_X = (y_grid[1:-1, 2:, :, 0] - y_grid[1:-1, :-2, :, 0]) / (2.0 * dx)
+        div_y_Y = (y_grid[2:, 1:-1, :, 1] - y_grid[:-2, 1:-1, :, 1]) / (2.0 * dy)
+
+        div_y = div_y_X + div_y_Y  
+        return div_y.reshape(-1, 2)
+
     d = x.shape[-1]
     div_rows = []
 
@@ -104,6 +115,18 @@ def div(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
 
 
 def grad(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    if x.dim() == 1 and None: # TO DO #
+        nx, ny = x
+        d = y.shape[-1]
+        y_grid = y.view(int(ny.item()) + 1, int(nx.item() + 1), 2)
+        dx = dy = 1
+
+        dy_dX = (y_grid[1:-1, 2:, :] - y_grid[1:-1, :-2, :]) / (2.0 * dx)
+        dy_dY = (y_grid[2:, 1:-1, :] - y_grid[:-2, 1:-1, :]) / (2.0 * dy)
+
+        grad_y = torch.stack([dy_dX, dy_dY], dim=-1)  
+        return grad_y.reshape(-1, d, 2)
+
     d = x.shape[-1]
     rows = []
 
