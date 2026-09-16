@@ -283,7 +283,7 @@ if __name__ == "__main__":
                 animate_deformation(
                     model_file, f"{model_file.stem}_mesh_deformation.mp4"
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"Error animating {model_file.stem}: {e}")
     else:
         Tk().withdraw()
