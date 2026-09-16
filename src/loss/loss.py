@@ -1,27 +1,35 @@
 import torch
 
 
+def mse(x_pred: torch.Tensor, x_gt: torch.Tensor, mean: bool = True) -> torch.Tensor:
+
+    diff_sq = (x_pred - x_gt) ** 2
+    return torch.mean(diff_sq) if mean else diff_sq
+
+
 def ic_loss(u_pred: torch.Tensor, u_exact: torch.Tensor) -> torch.Tensor:
-    return torch.mean((u_pred - u_exact) ** 2)
+    return mse(u_pred, u_exact)
 
 
 def bc_loss(u_bc_pred: torch.Tensor, g_bc: torch.Tensor) -> torch.Tensor:
-    return torch.mean((u_bc_pred - g_bc) ** 2)
+    return mse(u_bc_pred, g_bc)
 
 
-def r_loss(n: torch.Tensor) -> torch.Tensor:
-    return (n**2).mean()
+def r_loss(residual: torch.Tensor) -> torch.Tensor:
+    return mse(residual, torch.zeros_like(residual))
 
 
-def wr_loss(
-    time_residuals: list[torch.Tensor], eps: float
-) -> tuple[torch.Tensor, torch.Tensor]:
-    L_r_stack = torch.stack(time_residuals)
+def traction_bc_loss(
+    P: torch.Tensor, n_normal: torch.Tensor, g_traction: torch.Tensor
+) -> torch.Tensor:
+    traction_pred = (P @ n_normal.unsqueeze(-1)).squeeze(-1)
+    return mse(traction_pred, g_traction)
 
-    zeros = torch.zeros(1, device=L_r_stack.device)
-    past_loss = torch.cumsum(torch.cat([zeros, L_r_stack[:-1]]), dim=0)
-    weights = torch.exp(-eps * past_loss).detach()
 
-    loss = torch.mean(weights * L_r_stack)
+def rl2e(
+    x_pred: torch.Tensor, x_gt: torch.Tensor, eps: float = 1e-8
+) -> torch.Tensor:
 
-    return loss, torch.min(weights)
+    error_norm = torch.linalg.norm((x_pred - x_gt).flatten(), ord=2)
+    gt_norm = torch.linalg.norm(x_gt.flatten(), ord=2) + eps
+    return error_norm / gt_norm

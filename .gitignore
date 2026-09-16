@@ -1,5 +1,22 @@
+# Windows
 /desktop.ini
-/venv
 
+# Python virtual environments
+/venv/
+/.venv/
+
+# Python cache
+/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Project output
+/ablation/
+/export/
+/output/checkpoints/
+
+# Logs and archives
 *.log
-*.png
+*.zip
