@@ -1,5 +1,4 @@
 import torch
-
 from ..utils import div, grad, voigt_tensor, voigt_to_tensor
 from .equations import HUGO, HolzapfelEnergy_2D, Kinematics
 
@@ -38,14 +37,12 @@ def haslach_constitutive_residual_2D(
 
 
 def pako_residual_2D(
-    u_pred: torch.Tensor,
+    kin: torch.Tensor,
     S_pred: torch.Tensor,
     X_ref: torch.Tensor,
     b: torch.Tensor,
 ) -> torch.Tensor:
 
-    grad_u = grad(u_pred, X_ref)
-    kin = Kinematics(grad_u)
     S = (
         voigt_to_tensor(S_pred, is_shear=False)
         if S_pred.ndim == 2 and S_pred.shape[-1]

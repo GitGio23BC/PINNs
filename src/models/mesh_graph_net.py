@@ -188,6 +188,9 @@ class MeshGraphNet(nn.Module):
             activation=activation,
         )
 
+        self.mu = nn.Parameter(torch.rand(3), requires_grad=True)
+        self.alfa = nn.Parameter(torch.rand(3), requires_grad=True)
+
     def forward(
         self,
         graph: Graph,

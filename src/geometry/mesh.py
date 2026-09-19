@@ -32,6 +32,7 @@ class Mesh:
     elements: torch.Tensor
     edges: torch.Tensor
     boundary_nodes: torch.Tensor
+    right_nodes: torch.Tensor
 
     @property
     def n_nodes(self) -> int:
@@ -111,10 +112,12 @@ def create_mesh(
         (nodes[:, 1] >= height - tol)
     )
     boundary_nodes = torch.nonzero(boundary_mask, as_tuple=False).squeeze(1)
+    right_nodes = torch.nonzero(nodes[:, 0] >= width - tol, as_tuple=False).squeeze(1)
 
     return Mesh(
         nodes=nodes,
         elements=elements,
         edges=edges,
+        right_nodes=right_nodes,
         boundary_nodes=boundary_nodes
     )

@@ -55,6 +55,8 @@ def train():
         dataset = generate_ground_truth(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
+
+    dataset = torch.load(dataset_path, map_location=device, weights_only=False)
     time_grid = dataset["time"]
     t_min, t_max = time_grid.min(), time_grid.max()
     u_exact_traj = dataset["u"]
@@ -142,7 +144,11 @@ def train():
             "loss_bc_tip": 0.0,
         }
 
-        for t_step in range(time_steps):
+        for t_step in tqdm(
+                range(time_steps),
+                desc=f"Epoch {epoch}/{epochs}",
+                leave=False
+            ):
             t_curr = time_grid[t_step]
             t_norm = (t_curr - t_min) / (t_max - t_min)
             u_target = u_exact_traj[t_step]
@@ -209,6 +215,7 @@ def train():
 
             step_loss.backward()
             optimizer.step()
+            optimizer.zero_grad()
 
             E_prev_voigt = E_current_voigt.detach()  # type: ignore
             u_prev = u_pred.detach()  # type: ignore

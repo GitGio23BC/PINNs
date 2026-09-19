@@ -1,6 +1,34 @@
 import torch
-
 from .constitutive import StrainEnergy
+
+class Ogden:
+    def __init__(
+            self,
+            mu: float,
+            alpha: float,
+            beta: float,
+            J: torch.Tensor,     
+    ):
+        self.mu = mu #Hidden layer
+        self.alpha = alpha #Hidden layer
+        self.beta = beta #Hidden layer
+        self.J = J
+        self.g = beta**(-2)*(beta*torch.log(J)+J**(-beta)-1)
+        self.Jg_J = -(J**(-beta)-1)/(beta)
+        self.Jg_JJ = J**(-beta-1)
+
+    def energy(self, psi, E_voigt=None):
+        self.psi = psi
+        return psi 
+    
+    def grad(self, E_voigt):
+        return torch.autograd.grad(self.psi, E_voigt, grad_outputs=torch.ones_like(E_voigt), create_graph=True)[0]
+
+    def hessian(self, E_voigt=None):
+        pass
+
+    def hills_constitutive_inequality(self):
+        return self.mu*self.alpha>0, self.beta>0, self.J*self.Jg_JJ>0
 
 
 class Kinematics:

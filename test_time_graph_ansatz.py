@@ -16,7 +16,6 @@ from src.physics import (
     haslach_constitutive_residual_2D,
     pako_residual_2D,
 )
-from src.physics.equations import Kinematics, Ogden
 from src.utils import init_logging, load_config
 
 
@@ -45,8 +44,6 @@ def test(model_path: Path | None = None):
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
 
     time_grid = dataset["time"]
-    t_min, t_max = time_grid[0].item(), time_grid[-1].item()
-    time_steps = len(time_grid)
     u_exact_traj = dataset["u"]
     F_trajectory = dataset.get("F_applied", None)
 
@@ -112,32 +109,41 @@ def test(model_path: Path | None = None):
 
     # Testing
     logger.info("Statirn PINN tetstseting...")
-    for t_step in range(1, time_steps):
-
+    for t_step in range(time_steps):
         t_curr = time_grid[t_step]
-        t_norm = (t_curr - t_min) / (t_max - t_min)
-        graph = create_time_graph(mesh=mesh, u=u_prev, t=t_norm, device=device)
+        S_applied = F_trajectory[t_step] / A
+        graph = create_time_graph(mesh=mesh, u=u_prev, t=t_curr, device=device)
         predictions = mgn(graph)
+        X_ref = graph.mesh_nodes
+        print(f"Time Step {t_step+1}/{time_steps}: t = {t_curr:.4f} s, Predictions Shape: {predictions.shape}")
 
         X_ref = graph.mesh_nodes
+        X_coord = X_ref[:, 0:1]
 
-        u_pred = predictions[:, :2] #2x1
-        psi_pred = predictions[:, 2:3] #1x1
+        u_raw = predictions[:, :2]
+        u_pred = X_coord * u_raw
 
-        kin = Kinematics(grad_u=torch.autograd.functional.jacobian(lambda x: u_pred, X_ref))
+        S_raw = predictions[:, 2:]
+        S_pred = S_applied + (X_coord - x_max) * S_raw
 
-        #Ogden characterization
-        Ogden_model = Ogden(
-            mu=c_iso, 
-            alpha=c1, 
-            beta=c2, 
-            J=kin.J
-            )
+        # Viscoelastic Residuals
+        E_curr_voigt, haslach_res = haslach_constitutive_residual_2D(
+            u_pred=u_pred,
+            S_pred=S_pred,
+            X_ref=X_ref,
+            E_prev=E_prev_voigt,
+            dt=dt,
+            k_relax=k_relax,
+            c=c_iso,
+            c1=c1,
+            c2=c2,
+            c3=c3,
+        )
 
         # Momentum Residual
         pako_res = pako_residual_2D(
-            kin=kin,
-            S_pred=Ogden_model.grad(kin.E),
+            u_pred=u_pred,
+            S_pred=S_pred,
             X_ref=X_ref,
             b=b,
         )
