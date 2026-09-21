@@ -5,47 +5,56 @@ import torch
 from torch.optim import Adam
 from tqdm import tqdm
 
-from src.geometry import create_mesh, create_time_graph
-from src.loader import generate_ground_truth
-from src.loss import bc_loss, mse, r_loss
-from src.models import MeshGraphNet
-from src.physics import (
-    haslach_constitutive_residual_2D,
-    pako_residual_2D,
-)
-from src.utils import CSVLogger, init_logging, load_config, set_seed
+from src.geometry import create_graph, create_mesh
+from src.loader import MGNData, generate_ground_truth
+from src.models import build_mgn_model
+from src.utils import CSVLogger, deep_merge, init_logging, load_config, set_seed
 
 
-def train():
+def compute_loss(*args) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+
+    # Weight Load
+
+    # Residual
+    u_pred = torch.zeros(1)
+
+    # Boundary conditions
+
+    # Total Loss
+    total_loss = torch.zeros(1)
+
+    # Metrics Log
+    metrics = {"metric": 0.0}
+
+    return total_loss, u_pred, metrics  # Eventually add other returns
+
+
+def train(overrides: dict | None = None):
     # Logging and set-up
-    init_logging()
     cfg = load_config("config.yaml")
+    cfg = deep_merge(cfg, overrides)
     set_seed(int(cfg.get("seed", 42)))
 
-    device = torch.device(cfg["training"].get("device", "cpu"))
-    output_dir = Path(cfg.get("output_dir", "./output"))
+    device = torch.device(cfg["training"]["device"])
+    output_dir = cfg["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
+    model_type = cfg["model"]["type"]
 
-    model_name = (
-        "train - time_graph - raw_feats - inner_loop"  # cfg["model"]["model_name"]
-    )
+    model_name = cfg["model"]["model_name"]
     checkpoint_dir = Path(output_dir / "checkpoints" / model_name)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    init_logging()
     logger = logging.getLogger(__name__)
     metrics_logger = CSVLogger(
         output_dir / f"metrics_{model_name}.csv",
         fieldnames=[
-            "step",
             "epoch",
-            "step_loss",
-            "loss_data",
-            "loss_haslach",
-            "loss_pako",
-            "loss_bc_base",
-            "loss_bc_tip",
+            # Loss terms
         ],
     )
+
+    method = cfg["training"]["method"]
 
     # Data
     data_dir = Path(cfg["data"]["data_dir"])
@@ -55,12 +64,9 @@ def train():
         dataset = generate_ground_truth(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
-
-    dataset = torch.load(dataset_path, map_location=device, weights_only=False)
+    data_loader = MGNData(cfg, dataset)
     time_grid = dataset["time"]
-    t_min, t_max = time_grid.min(), time_grid.max()
-    u_exact_traj = dataset["u"]
-    F_trajectory = dataset["F_applied"]
+    time_steps = len(dataset["time"])
 
     # Mesh
     x_min, x_max = cfg["domain"]["x_range"]
@@ -75,25 +81,11 @@ def train():
         device=device,
     )
 
-    num_nodes = mesh.n_nodes
-    boundary_indices = mesh.boundary_nodes
-
-    tol = 1e-7
-    base_mask = mesh.nodes[boundary_indices, 0] <= (x_min + tol)
-    tip_mask = mesh.nodes[boundary_indices, 0] >= (x_max - tol)
-
-    base_nodes_idx = boundary_indices[base_mask]
-    tip_nodes_idx = boundary_indices[tip_mask]
-
     # Model
-    mgn = MeshGraphNet(
-        node_in_dim=7,  # int(cfg["model"]["node_in_dim"]),
-        edge_in_dim=int(cfg["model"]["edge_in_dim"]),
-        latent_dim=int(cfg["model"]["latent_dim"]),
-        hidden_dim=int(cfg["model"]["hidden_dim"]),
-        num_layers=int(cfg["model"]["num_layers"]),
-        output_dim=5,
-    ).to(device)
+    mgn = build_mgn_model(cfg, method, device=device)
+
+    ## Add Ansatz check
+
     optimizer = Adam(
         mgn.parameters(),
         lr=float(cfg["optimizer"]["lr"]),
@@ -102,147 +94,87 @@ def train():
 
     # Physics Constants
     p_cfg = cfg["physics"]
-    A = float(p_cfg["area"])
-    k_relax = float(p_cfg["k_relax"])
-    c_iso = float(p_cfg["c"])
-    c1 = float(p_cfg["c1"])
-    c2 = float(p_cfg["c2"])
-    c3 = float(p_cfg["c3"])
-    b = torch.tensor(
-        p_cfg["body_force"],
-        device=device,
-        dtype=torch.float32,
-    )
+
+    ## Define tissue model
+
+    b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float32)
 
     # Loss weights
-    loss_w = cfg["training"]["loss_weights"]
-    w_data = float(loss_w["lambda_data"])
-    w_haslach = float(loss_w["lambda_haslach"])
-    w_momentum = float(loss_w["lambda_momentum"])
-    w_bc_base = float(loss_w["lambda_bc_base"])
-    w_bc_tip = float(loss_w["lambda_bc_tip"])
+    cfg_w = cfg["training"]["loss_weights"]
+    loss_weights = {
+        "lambda_data": float(cfg_w["lambda_data"]),
+        "lambda_haslach": float(cfg_w["lambda_haslach"]),
+        "lambda_momentum": float(cfg_w["lambda_momentum"]),
+        "lambda_initial": float(cfg_w["lambda_initial"]),
+        "lambda_bc_base": float(cfg_w["lambda_bc_base"]),
+        "lambda_bc_tip": float(cfg_w["lambda_bc_tip"]),
+    }
 
     # Training Parameters
-    epochs = int(cfg["training"]["epochs"])
-    time_steps = len(time_grid)
-    dt = float((time_grid[-1] - time_grid[0]) / max(time_steps - 1, 1))
+    epochs = int(cfg["training"]["adam_epochs"])
+    raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
+
+    ## ADD MESH BORDER INDEX (assuming a square/cube)
+    raw_node_type[mesh.top_nodes] = 3  # type: ignore
+    raw_node_type[mesh.bottom_nodes] = 3  # type: ignore
+    raw_node_type[mesh.right_nodes] = 2  # type: ignore
+    raw_node_type[mesh.left_nodes] = 1  # type: ignore
+
+    node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
+
+    ## Ablation study section (optional)
+    use_trac = method in {"traction", "dynamic", "visco", "full"}
+    use_u_dot = method in {"dynamic", "full"}
+    use_E = method in {"visco", "full"}
+    use_S = method == "full"
 
     # Training
-    logger.info("Stratring PINN-MSG trainingin...")
+    logger.info("Start Hybrid MSG training...")
 
     for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
         # Initialisation
-        E_prev_voigt = torch.zeros((num_nodes, 3), device=device, dtype=torch.float32)
-        u_prev = torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
 
-        metrics = {
-            "step_loss": 0.0,
-            "loss_data": 0.0,
-            "loss_haslach": 0.0,
-            "loss_pako": 0.0,
-            "loss_bc_base": 0.0,
-            "loss_bc_tip": 0.0,
-        }
+        ## Rollout prediction terms
 
-        for t_step in tqdm(
-                range(time_steps),
-                desc=f"Epoch {epoch}/{epochs}",
-                leave=False
-            ):
-            t_curr = time_grid[t_step]
-            t_norm = (t_curr - t_min) / (t_max - t_min)
-            u_target = u_exact_traj[t_step]
-            S_applied = F_trajectory[t_step] / A
-            logger.info(
-                f"\n--- Time Step {t_step}/{time_steps} (t = {t_curr:.3f}s) ---"
-            )
-
-            graph = create_time_graph(mesh=mesh, u=u_prev, t=t_norm, device=device)
-            predictions = mgn(graph)
-
-            X_ref = graph.mesh_nodes
-            X_coord = X_ref[:, 0:1]
-
-            u_raw = predictions[:, :2]
-            u_pred = X_coord * u_raw
-
-            S_raw = predictions[:, 2:]
-            S_pred = S_applied + (X_coord - x_max) * S_raw
-
-            loss_data = mse(u_pred, u_target)
-
-            # Viscoelastic Loss
-            E_current_voigt, haslash_residuals = haslach_constitutive_residual_2D(
-                u_pred=u_pred,
-                S_pred=S_pred,
-                X_ref=X_ref,
-                E_prev=E_prev_voigt,
-                dt=dt,
-                k_relax=k_relax,
-                c=c_iso,
-                c1=c1,
-                c2=c2,
-                c3=c3,
-            )
-            loss_haslach = r_loss(haslash_residuals)
-
-            # Momentum Loss
-            pako_residual = pako_residual_2D(
-                u_pred=u_pred,
-                S_pred=S_pred,
-                X_ref=X_ref,
-                b=b,
-            )
-            loss_pako = r_loss(pako_residual)
-
-            # Boundary Loss
-            u_base_pred = u_pred[base_nodes_idx]
-            loss_bc_base = bc_loss(u_base_pred, torch.zeros_like(u_base_pred))
-
-            S_tip_pred = S_pred[tip_nodes_idx]
-            S_tip_applied = S_applied[tip_nodes_idx]
-
-            loss_bc_tip = bc_loss(S_tip_pred, S_tip_applied)
-
-            # Total Loss
-            step_loss = (
-                w_data * loss_data
-                + w_haslach * loss_haslach
-                + w_momentum * loss_pako
-                + w_bc_base * loss_bc_base
-                + w_bc_tip * loss_bc_tip
-            )
-
-            step_loss.backward()
-            optimizer.step()
+        for t_step in range(time_steps):
             optimizer.zero_grad()
+            batch = data_loader.get_batch(t_step)
 
-            E_prev_voigt = E_current_voigt.detach()  # type: ignore
-            u_prev = u_pred.detach()  # type: ignore
+            ## CREATE GRAPH MUST BE REWORKED
+            graph = create_graph(
+                mesh=mesh,  # type: ignore
+                u=u_prev,  # type: ignore # noqa: F821
+                node_type=node_type,  # type: ignore
+                t=t_norm,  # type: ignore # noqa: F821
+                device=device,  # type: ignore
+                trac=batch.trac if use_trac else None,  # type: ignore
+                u_dot=u_dot_prev if use_u_dot else None,  # type: ignore  # noqa: F821
+                E_prev=E_prev_voigt if use_E else None,  # type: ignore # noqa: F821
+                S_prev=S_prev_voigt if use_S else None,  # type: ignore # noqa: F821
+            )
 
-            # Checkpoint
-            metrics["step_loss"] += step_loss.detach().item()
-            metrics["loss_data"] += loss_data.detach().item()
-            metrics["loss_haslach"] += loss_haslach.detach().item()
-            metrics["loss_pako"] += loss_pako.detach().item()
-            metrics["loss_bc_base"] += loss_bc_base.detach().item()
-            metrics["loss_bc_tip"] += loss_bc_tip.detach().item()
+            # Add/return needed term accordantly to loss compute function
+            total_loss, u_pred, metrics = compute_loss()
 
-        avg_metrics = {
-            "epoch": epoch,
-            **{name: value / time_steps for name, value in metrics.items()},
-        }
-        logger.info(
-            f"Checkpoint {' | '.join([str(k) + ': ' + str(v) for k, v in metrics.items()])}"
-        )
-        metrics_logger.log(avg_metrics)
-        torch.save(
-            {
-                "model_state_dict": mgn.state_dict(),
-                "config": cfg,
-            },
-            checkpoint_dir / f"{model_name}_{epoch}.pt",
-        )
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(mgn.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            # Update tollaoout prediction terms
+
+            # Metrics
+            metrics["step"] = t_step
+            metrics["epoch"] = epoch
+            metrics_logger.log(metrics)
+
+        if epoch % 50 == 0:
+            torch.save(
+                {
+                    "model_state_dict": mgn.state_dict(),
+                    "config": cfg,
+                },
+                checkpoint_dir / f"{model_name}_{epoch}.pt",
+            )
 
     torch.save(
         {
@@ -251,8 +183,30 @@ def train():
         },
         output_dir / f"{model_name}.pt",
     )
+
     logger.info("-----------------------------Train Ended-----------------------------")
 
 
 if __name__ == "__main__":
-    train()
+    cfg = load_config()
+    if cfg["bulk"]:
+        for train_type in ["standard", "ansatz_space"]:
+            for method in ["base", "traction", "dynamic", "visco", "full"]:
+                overrides = {
+                    "model": {
+                        "type": train_type,
+                        "model_name": f"{train_type}_model_{method}",
+                    },
+                    "output_dir": f"{train_type}/{method}",
+                    "training": {
+                        "device": "cuda" if torch.cuda.is_available() else "cpu"
+                    },
+                }
+
+                train(overrides)
+    else:
+        train()
+
+match input():
+    case "base":
+        print("base")

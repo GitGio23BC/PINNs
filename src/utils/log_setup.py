@@ -36,6 +36,25 @@ def init_logging(level: str | None = None) -> None:
     root.addHandler(ch)
     """
 
+
+def deep_merge(base: dict, override: dict | None) -> dict:
+    if override is None:
+        return base
+    
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(config_path: str | Path = "config.yaml") -> dict:
+    with open(Path("default.yamal"), "r", encoding="utf-8") as f:
+        default = yaml.safe_load(f) or {}
+
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f) or {}
+
+    return deep_merge(default, cfg)
