@@ -1,34 +1,4 @@
 import torch
-from .constitutive import StrainEnergy
-
-class Ogden:
-    def __init__(
-            self,
-            mu: float,
-            alpha: float,
-            beta: float,
-            J: torch.Tensor,     
-    ):
-        self.mu = mu #Hidden layer
-        self.alpha = alpha #Hidden layer
-        self.beta = beta #Hidden layer
-        self.J = J
-        self.g = beta**(-2)*(beta*torch.log(J)+J**(-beta)-1)
-        self.Jg_J = -(J**(-beta)-1)/(beta)
-        self.Jg_JJ = J**(-beta-1)
-
-    def energy(self, psi, E_voigt=None):
-        self.psi = psi
-        return psi 
-    
-    def grad(self, E_voigt):
-        return torch.autograd.grad(self.psi, E_voigt, grad_outputs=torch.ones_like(E_voigt), create_graph=True)[0]
-
-    def hessian(self, E_voigt=None):
-        pass
-
-    def hills_constitutive_inequality(self):
-        return self.mu*self.alpha>0, self.beta>0, self.J*self.Jg_JJ>0
 
 
 class Kinematics:
@@ -39,105 +9,95 @@ class Kinematics:
         self.F = self.I + self.grad_u
         self.C = self.F.mT @ self.F
         self.E = 0.5 * (self.C - self.I)
-        self.J = torch.linalg.det(self.F)
+        self.J = torch.linalg.det(self.F).clamp(min=1e-8)
 
-    def compute_P(self, S: torch.Tensor):
+    def compute_P(self, S: torch.Tensor) -> torch.Tensor:
         return self.F @ S
 
+    def compute_tau(self, S: torch.Tensor) -> torch.Tensor:
+        return self.F @ S @ self.F.mT
 
-class HolzapfelEnergy_2D(StrainEnergy):
+    def compute_sigma(self, S: torch.Tensor) -> torch.Tensor:
+        tau = self.compute_tau(S)
+        return tau / self.J.unsqueeze(-1).unsqueeze(-1)
+
+
+class Ogden:
     def __init__(
         self,
-        c: float,
-        c1: float,
-        c2: float,
-        c3: float,
-        device: torch.device | str = "cpu",
-    ) -> None:
+        psi: torch.Tensor,
+        mus: torch.Tensor,
+        alphas: torch.Tensor,
+        beta: float,
+        lam: float,
+        kin: Kinematics,
+    ):
+        self.psi = psi  # Model output
+        self.mus = mus  # Hidden layer
+        self.alphas = alphas  # Hidden layer
+        self.beta = beta  # Hidden layer
+        self.lam = lam
+        self.kin = kin
+        self.g, self.Jg_J, self.Jg_JJ = self.get_g()
 
-        self.c = c
-        self.Q = torch.tensor(
-            [
-                [c1, 0.5 * c3, 0.0],
-                [0.5 * c3, c2, 0.0],
-                [0.0, 0.0, 0.25 * (c1 + c2)],
-            ],
-            dtype=torch.float32,
-            device=device,
+    def get_g(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self.g = self.beta ** (-2) * (
+            self.beta * torch.log(self.kin.J) + self.kin.J ** (-self.beta) - 1.0
+        )
+        self.Jg_J = -(self.kin.J ** (-self.beta) - 1) / (self.beta)
+        self.Jg_JJ = self.kin.J ** (-self.beta - 1)
+
+        return self.g, self.Jg_J, self.Jg_JJ
+
+    def get_principal_stretches(self, eps: float = 1e-12) -> torch.Tensor:
+        # Compute the eigenvalues using analytic formula
+        tr_C = self.kin.C[..., 0, 0] + self.kin.C[..., 1, 1]
+        det_C = (
+            self.kin.C[..., 0, 0] * self.kin.C[..., 1, 1]
+            - self.kin.C[..., 0, 1] * self.kin.C[..., 1, 0]
         )
 
-    def energy(self, E_voigt: torch.Tensor) -> torch.Tensor:
-        E_vec = E_voigt.unsqueeze(-1) if E_voigt.ndim == 2 else E_voigt
+        delta = torch.clamp((tr_C**2) - 4.0 * det_C, min=0.0)
+        sqrt_delta = torch.sqrt(delta + eps)
 
-        s = E_vec.mT @ self.Q @ E_vec
+        eig_1 = 0.5 * (tr_C + sqrt_delta)
+        eig_2 = 0.5 * (tr_C - sqrt_delta)
 
-        return self.c * (torch.exp(s) - 1.0)
+        lam_1 = torch.sqrt(torch.clamp(eig_1, min=1e-8))
+        lam_2 = torch.sqrt(torch.clamp(eig_2, min=1e-8))
+        lam_2D = torch.stack([lam_1, lam_2], dim=-1)
 
-    def grad(self, E_voigt: torch.Tensor) -> torch.Tensor:
-        E_vec = E_voigt.unsqueeze(-1) if E_voigt.ndim == 2 else E_voigt
+        ones = torch.ones_like(lam_2D[..., :1])
+        return torch.cat([lam_2D, ones], dim=-1)
 
-        B = 2 * self.Q  # self.Q + self.Q.mT
-        s = E_vec.mT @ self.Q @ E_vec
-        exp_s = torch.exp(s)
-        S_vec = self.c * exp_s * (B @ E_vec)
+    def get_2Dpsi(self) -> torch.Tensor:
 
-        return S_vec.squeeze(-1) if E_voigt.ndim == 2 else S_vec
+        lam_princ = self.get_principal_stretches()
 
-    def hessian(self, E_voigt: torch.Tensor) -> torch.Tensor:
-        E_vec = E_voigt.unsqueeze(-1) if E_voigt.ndim == 2 else E_voigt
+        lam_pow = lam_princ.unsqueeze(-1) ** self.alphas
+        phi = (torch.sum(lam_pow, dim=-2) - 3.0) / self.alphas
+        psi_deviatronic = torch.sum(
+            self.mus * (phi - torch.log(self.kin.J).unsqueeze(-1)), dim=-1
+        )
+        psi_volumetric = self.lam * self.get_g()[0]
 
-        B = 2 * self.Q
-        s = E_vec.mT @ self.Q @ E_vec
-        exp_s = torch.exp(s)
+        psi = psi_deviatronic + psi_volumetric
 
-        BE = B @ E_vec
-        BE_outer = BE @ BE.mT
+        return psi
 
-        return self.c * exp_s * (B.unsqueeze(0) + BE_outer)
+    def get_C_SE(self):
+        pass
 
+    def get_S(self, E: torch.Tensor) -> torch.Tensor:
+        return torch.autograd.grad(
+            self.psi, E, grad_outputs=torch.ones_like(E), create_graph=True
+        )[0]
 
-class HUGO:
-    """
-    A Holzapfel-Gasser-Ogden (HGO) model.
-    It implements a very basic version assuming
-    isotropy.
-
-    The material consists of:
-
-        - 150 ml of Prosecco
-        - 20 ml of lemon balm or elderflower syrup
-        - seltzer or soda
-        - 1 slice of lemon or lime
-        - ice
-
-    Remember to decor with mint leaves.
-    """
-
-    def __init__(
+    def hills_constitutive_inequality(
         self,
-        psi: StrainEnergy,
-        k_relax: float,
-        eps_reg: float = 1e-6,
-    ) -> None:
-        self.psi = psi
-        self.k_relax = k_relax
-        self.eps_reg = eps_reg
-
-    def haslach_equation(
-        self,
-        E_voigt: torch.Tensor,
-        S_applied_voigt: torch.Tensor,
-    ) -> torch.Tensor:
-        S_int = self.psi.grad(E_voigt)
-        H = self.psi.hessian(E_voigt)
-
-        dS = (S_int - S_applied_voigt).unsqueeze(-1)
-        reg = self.eps_reg * torch.eye(3, device=H.device, dtype=H.dtype)
-        H_reg = H + reg
-
-        iHdS = torch.linalg.solve(H_reg, dS)
-        iiHdS = torch.linalg.solve(H_reg, iHdS)
-
-        E_dot_target = -self.k_relax * iiHdS
-
-        return E_dot_target.squeeze(-1)
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return (
+            torch.all(self.mus * self.alphas > 0),
+            torch.tensor(self.beta > 0),
+            torch.all(self.kin.J * self.Jg_JJ > 0),
+        )
