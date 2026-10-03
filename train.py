@@ -7,7 +7,11 @@ from tqdm import tqdm
 
 from src.geometry import create_graph, create_mesh
 from src.loader import MGNData, generate_ground_truth
+<<<<<<< HEAD
 from src.models import build_mgn_model
+=======
+from src.models import MeshGraphNet
+>>>>>>> OdgenBranch/Dataset_Generation
 from src.utils import CSVLogger, deep_merge, init_logging, load_config, set_seed
 
 
@@ -36,7 +40,11 @@ def train(overrides: dict | None = None):
     set_seed(int(cfg.get("seed", 42)))
 
     device = torch.device(cfg["training"]["device"])
+<<<<<<< HEAD
     output_dir = cfg["output_dir"]
+=======
+    output_dir = Path(cfg["output_dir"])
+>>>>>>> OdgenBranch/Dataset_Generation
     output_dir.mkdir(parents=True, exist_ok=True)
     model_type = cfg["model"]["type"]
 
@@ -64,7 +72,11 @@ def train(overrides: dict | None = None):
         dataset = generate_ground_truth(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
+<<<<<<< HEAD
     data_loader = MGNData(cfg, dataset)
+=======
+    data_loader = MGNData(dataset)
+>>>>>>> OdgenBranch/Dataset_Generation
     time_grid = dataset["time"]
     time_steps = len(dataset["time"])
 
@@ -82,9 +94,15 @@ def train(overrides: dict | None = None):
     )
 
     # Model
+<<<<<<< HEAD
     mgn = build_mgn_model(cfg, method, device=device)
 
     ## Add Ansatz check
+=======
+    mgn = MeshGraphNet().to(device)
+
+    ## Add Ansatz check (optional)
+>>>>>>> OdgenBranch/Dataset_Generation
 
     optimizer = Adam(
         mgn.parameters(),
@@ -94,6 +112,7 @@ def train(overrides: dict | None = None):
 
     # Physics Constants
     p_cfg = cfg["physics"]
+<<<<<<< HEAD
 
     ## Define tissue model
 
@@ -129,6 +148,48 @@ def train(overrides: dict | None = None):
     use_S = method == "full"
 
     # Training
+=======
+    alphas = torch.tensor(p_cfg["alphas"], device=device, dtype=torch.float32)
+    mus = torch.tensor(p_cfg["mus"], device=device, dtype=torch.float32)
+    lam = float(p_cfg["lam"])
+    beta = float(p_cfg["beta"])
+    b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float32)
+
+    ## Define tissue model
+    # To define in accordently with the loss function
+    data_loader.load_physics(mus, alphas, beta, lam)
+
+    # Training Parameters
+    ## Loss weights
+    cfg_w = cfg["training"]["loss_weights"]
+    loss_weights = {
+        "lambda_data": float(cfg_w["lambda_data"]),
+        "lambda_haslach": float(cfg_w["lambda_haslach"]),
+        "lambda_momentum": float(cfg_w["lambda_momentum"]),
+        "lambda_initial": float(cfg_w["lambda_initial"]),
+        "lambda_bc_base": float(cfg_w["lambda_bc_base"]),
+        "lambda_bc_tip": float(cfg_w["lambda_bc_tip"]),
+    }
+
+    epochs = int(cfg["training"]["adam_epochs"])
+    raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
+
+    ## Mesh border index assuming a square/cube
+    raw_node_type[mesh.top_nodes] = 3
+    raw_node_type[mesh.bottom_nodes] = 3
+    raw_node_type[mesh.right_nodes] = 2
+    raw_node_type[mesh.left_nodes] = 1
+
+    node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
+
+    ## Ablation study section (optional)
+    use_trac = method in {"traction", "dynamic", "visco", "full"}
+    use_u_dot = method in {"dynamic", "full"}
+    use_E = method in {"visco", "full"}
+    use_S = method == "full"
+
+    # Training Loop
+>>>>>>> OdgenBranch/Dataset_Generation
     logger.info("Start Hybrid MSG training...")
 
     for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
@@ -206,7 +267,10 @@ if __name__ == "__main__":
                 train(overrides)
     else:
         train()
+<<<<<<< HEAD
 
 match input():
     case "base":
         print("base")
+=======
+>>>>>>> OdgenBranch/Dataset_Generation

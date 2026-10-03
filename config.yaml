@@ -1,31 +1,10 @@
 # ==========================================
-# EXPERIMENT IDENTIFICATION
-# ==========================================
-seed: 42
-output_dir: "./output"
-bulk: false
-
-# ==========================================
-# GLOBAL PHYSICS CONSTANTS
-# ==========================================
-physics:
-  equation: "viscoelastic_residual_Holzapfel_2D"
-  k_relax: 15.0
-  c: 0.88
-  c1: 13.0
-  c2: 13.0
-  c3: 0.0
-  area: 1.0
-  density: 1.0
-  body_force: [0.0, 0.0]
-  sigma_max: 1.0
-
-# ==========================================
 # MODEL CONFIGURATION
 # ==========================================
 model:
   model_name: "MGN_time_nodes"
   architecture: "MeshGraphNet"
+  type: "standard"
   node_in_dim: 7
   edge_in_dim: 6
   latent_dim: 64
@@ -34,27 +13,11 @@ model:
   output_dim: 5
 
 # ==========================================
-# DATA & SPATIO-TEMPORAL DOMAIN
-# ==========================================
-data:
-  dataset_name: "ground_truth_2D.pt"
-  data_dir: "./data/synt"
-  batch_size: 1
-  num_workers: 0
-
-domain:
-  x_range: [0.0, 1.0]
-  y_range: [0.0, 1.0]
-  t_range: [0.0, 1.0]
-  nx: 10
-  ny: 10
-  n_steps: 100
-
-# ==========================================
 # TRAINING CONFIGURATION
 # ==========================================
 training:
-  device: "cuda"
+  method: "base"
+  device: "cpu"
   epochs: 100
   loss_weights:
     lambda_data: 1.0
@@ -63,10 +26,33 @@ training:
     lambda_bc_base: 10.0
     lambda_bc_tip: 100.0
 
+  # ==========================================
+# DATA & SPATIO-TEMPORAL DOMAIN
 # ==========================================
-# OPTIMIZER
+data:
+  dataset_name: "odgen_dataset.pt"
+  data_dir: "./data/synt"
+  batch_size: 1
+  num_workers: 0
+
+domain:
+  x_range: [0.0, 1.0]
+  y_range: [0.0, 1.0]
+  t_range: [0.0, 2.0]
+  nx: 10
+  ny: 10
+  n_steps: 200
+
+
 # ==========================================
-optimizer:
-  name: "adam"
-  lr: 0.005
-  weight_decay: 0.0
+# GLOBAL PHYSICS CONSTANTS
+# ==========================================
+physics:
+  equation: "ogden_compressible"
+  alphas: [1.3, 5.0, -2.0] 
+  mus: [6.3e5, 1.2e3, -1.0e4] 
+  lambda: 6.0e5    
+  beta: 2.0 
+  rho_0: 1000.0 
+  body_force: [0.0, 0.0]
+  sigma_max: 1.5e5

@@ -15,7 +15,7 @@ from src.utils import init_logging, load_config
 
 def rollout_trajectory(
     model: MeshGraphNet, mesh, time_grid: torch.Tensor, device: torch.device
-):
+) -> np.ndarray:
     model.eval()
     num_nodes = mesh.n_nodes
     time_steps = len(time_grid)
@@ -37,7 +37,6 @@ def rollout_trajectory(
 
             u_next = X_coord * u_raw
 
-
             u_pred_trajectory.append(u_next)
             u_curr = u_next
 
@@ -48,12 +47,13 @@ def animate_deformation(
     model_path: Path | None = None,
     output_filename: str = "mesh_deformation.mp4",
     fps: int = 20,
-):
-    # Logging and set-up
+):  
+    # Config and logging
     init_logging()
     cfg = load_config()
     device = torch.device(cfg["training"].get("device", "cpu"))
     output_dir = Path(cfg.get("output_dir", "./output"))
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if model_path is None:
         model_path = output_dir / f"{cfg['model']['model_name']}.pt"
@@ -61,17 +61,19 @@ def animate_deformation(
     if not model_path.exists():
         raise FileNotFoundError(f"Missing model file: {model_path}")
 
-    # Data
+    # Dataset
     data_dir = Path(cfg["data"]["data_dir"])
     dataset_path = data_dir / cfg["data"]["dataset_name"]
 
     if not dataset_path.exists():
+        print(f"Dataset not found at {dataset_path}. Generating now...")
         dataset = generate_ground_truth(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
 
     time_grid = dataset["time"]
     u_exact_traj = dataset["u"].cpu().numpy()
+    F_ext_traj = dataset["F_ext"].cpu().numpy()
 
     # Mesh
     x_min, x_max = cfg["domain"]["x_range"]
@@ -100,15 +102,13 @@ def animate_deformation(
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     mgn.load_state_dict(state_dict)
 
-    # Evaluate
+    # Rollout
     u_pred_traj = rollout_trajectory(mgn, mesh, time_grid, device)
 
-    # Init Animation
+    # Geometry and margin
     nodes_ref = mesh.nodes.cpu().numpy()
     elements = mesh.elements.cpu().numpy()
     num_frames = len(time_grid)
-
-    fig, (ax_gt, ax_pred) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 
     all_x = np.concatenate(
         [nodes_ref[:, 0] + u_exact_traj[..., 0], nodes_ref[:, 0] + u_pred_traj[..., 0]]
@@ -116,8 +116,8 @@ def animate_deformation(
     all_y = np.concatenate(
         [nodes_ref[:, 1] + u_exact_traj[..., 1], nodes_ref[:, 1] + u_pred_traj[..., 1]]
     )
-    margin_x = (all_x.max() - all_x.min()) * 0.1
-    margin_y = (all_y.max() - all_y.min()) * 0.1
+    margin_x = (all_x.max() - all_x.min()) * 0.15
+    margin_y = (all_y.max() - all_y.min()) * 0.15
 
     xlim = (all_x.min() - margin_x, all_x.max() + margin_x)
     ylim = (all_y.min() - margin_y, all_y.max() + margin_y)
@@ -126,47 +126,11 @@ def animate_deformation(
     mag_pred = np.linalg.norm(u_pred_traj, axis=-1)
     vmax = max(mag_exact.max(), mag_pred.max(), 1e-4)
 
-    # Init plot elements
-    tripcolor_gt = ax_gt.tripcolor(
-        nodes_ref[:, 0],
-        nodes_ref[:, 1],
-        elements,
-        mag_exact[0],
-        cmap="viridis",
-        vmin=0.0,
-        vmax=vmax,
-        shading="gouraud",
-    )
-    triplot_gt = ax_gt.triplot(
-        nodes_ref[:, 0],
-        nodes_ref[:, 1],
-        elements,
-        color="black",
-        alpha=0.3,
-        linewidth=0.8,
-    )[0]
+    fig, (ax_gt, ax_pred) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 
-    tripcolor_pred = ax_pred.tripcolor(
-        nodes_ref[:, 0],
-        nodes_ref[:, 1],
-        elements,
-        mag_pred[0],
-        cmap="viridis",
-        vmin=0.0,
-        vmax=vmax,
-        shading="gouraud",
-    )
-    triplot_pred = ax_pred.triplot(
-        nodes_ref[:, 0],
-        nodes_ref[:, 1],
-        elements,
-        color="black",
-        alpha=0.3,
-        linewidth=0.8,
-    )[0]
-
+    sm = plt.cm.ScalarMappable(cmap="viridis", norm=plt.Normalize(vmin=0.0, vmax=vmax)) # type: ignore
     fig.colorbar(
-        tripcolor_pred,
+        sm,
         ax=[ax_gt, ax_pred],
         orientation="horizontal",
         fraction=0.05,
@@ -174,20 +138,18 @@ def animate_deformation(
         label="Displacement Magnitude ||u|| [m]",
     )
 
-    for ax in (ax_gt, ax_pred):
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
-        ax.set_aspect("equal")
-        ax.grid(True, linestyle="--", alpha=0.3)
-
-    ax_gt.set_xlabel("X [m]")
-    ax_gt.set_ylabel("Y [m]")
-    ax_pred.set_xlabel("X [m]")
-
     def update(frame: int):
-        t_val = time_grid[frame].item()
+        t_val = (
+            time_grid[frame].item()
+            if isinstance(time_grid[frame], torch.Tensor)
+            else float(time_grid[frame])
+        )
 
-        # Update Ground Truth
+        f_current = F_ext_traj[frame]
+        f_norm = np.linalg.norm(f_current, axis=-1)
+        active_nodes = f_norm > 1e-8
+
+        # Update ground truth
         pos_gt = nodes_ref + u_exact_traj[frame]
         ax_gt.clear()
         ax_gt.set_title(f"Ground Truth (t = {t_val:.3f} s)")
@@ -209,12 +171,28 @@ def animate_deformation(
             alpha=0.3,
             linewidth=0.8,
         )
+
+        if np.any(active_nodes):
+            ax_gt.quiver(
+                pos_gt[active_nodes, 0],
+                pos_gt[active_nodes, 1],
+                f_current[active_nodes, 0],
+                f_current[active_nodes, 1],
+                color="red",
+                scale=None,
+                width=0.005,
+                label=r"Applied $F_{ext}$",
+            )
+            ax_gt.legend(loc="upper left")
+
         ax_gt.set_xlim(xlim)
         ax_gt.set_ylim(ylim)
         ax_gt.set_aspect("equal")
         ax_gt.grid(True, linestyle="--", alpha=0.3)
+        ax_gt.set_xlabel("X [m]")
+        ax_gt.set_ylabel("Y [m]")
 
-        # Update Prediction
+        # Update prediction
         pos_pred = nodes_ref + u_pred_traj[frame]
         ax_pred.clear()
         ax_pred.set_title(f"MeshGraphNet PINN (t = {t_val:.3f} s)")
@@ -236,10 +214,25 @@ def animate_deformation(
             alpha=0.3,
             linewidth=0.8,
         )
+
+        if np.any(active_nodes):
+            ax_pred.quiver(
+                pos_pred[active_nodes, 0],
+                pos_pred[active_nodes, 1],
+                f_current[active_nodes, 0],
+                f_current[active_nodes, 1],
+                color="red",
+                scale=None,
+                width=0.005,
+                label=r"Applied $F_{ext}$",
+            )
+            ax_pred.legend(loc="upper left")
+
         ax_pred.set_xlim(xlim)
         ax_pred.set_ylim(ylim)
         ax_pred.set_aspect("equal")
         ax_pred.grid(True, linestyle="--", alpha=0.3)
+        ax_pred.set_xlabel("X [m]")
 
         return []
 
