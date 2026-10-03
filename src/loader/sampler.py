@@ -9,17 +9,24 @@ class MGNBatch:
     dt: float
     X_ref: torch.Tensor
     u: torch.Tensor
-    E: torch.Tensor
-    S: torch.Tensor
-    trac: torch.Tensor
+    F_ext: torch.Tensor
 
 
 class MGNData:
-    def __init__(self, cfg: dict, dataset: dict[str, torch.Tensor]) -> None:
+    def __init__(self, dataset: dict[str, torch.Tensor]) -> None:
         self.time = dataset["time"]
         self.num_steps = len(self.time)
         self.dt = float((self.time[-1] - self.time[0]) / max(self.num_steps - 1, 1))
         self.dataset = dataset
+
+    def load_physics(
+        self,
+        mus: torch.Tensor,
+        alphas: torch.Tensor,
+        beta: float,
+        lam: float,
+    ):
+        pass
 
     def get_batch(self, step: int) -> MGNBatch:
         return MGNBatch(
@@ -27,7 +34,5 @@ class MGNData:
             dt=self.dt,
             X_ref=self.dataset["nodes"],
             u=self.dataset["u"][step],
-            E=self.dataset["E"][step],
-            S=self.dataset["S"][step],
-            trac=self.dataset["trac_ext"][step],
+            F_ext=self.dataset["F_ext"][step],
         )

@@ -70,8 +70,8 @@ class Ogden:
         ones = torch.ones_like(lam_2D[..., :1])
         return torch.cat([lam_2D, ones], dim=-1)
 
-    def get_2Dpsi(self) -> torch.Tensor:
-
+    def _get_2Dpsi(self) -> torch.Tensor:
+        """ONLY FOR DATASET GENERSTION"""
         lam_princ = self.get_principal_stretches()
 
         lam_pow = lam_princ.unsqueeze(-1) ** self.alphas
@@ -84,10 +84,7 @@ class Ogden:
         psi = psi_deviatronic + psi_volumetric
 
         return psi
-
-    def get_C_SE(self):
-        pass
-
+    
     def get_S(self, E: torch.Tensor) -> torch.Tensor:
         return torch.autograd.grad(
             self.psi, E, grad_outputs=torch.ones_like(E), create_graph=True

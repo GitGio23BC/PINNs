@@ -64,7 +64,7 @@ def train(overrides: dict | None = None):
         dataset = generate_ground_truth(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
-    data_loader = MGNData(cfg, dataset)
+    data_loader = MGNData(dataset)
     time_grid = dataset["time"]
     time_steps = len(dataset["time"])
 
@@ -84,7 +84,7 @@ def train(overrides: dict | None = None):
     # Model
     mgn = MeshGraphNet().to(device)
 
-    ## Add Ansatz check
+    ## Add Ansatz check (optional)
 
     optimizer = Adam(
         mgn.parameters(),
@@ -94,12 +94,18 @@ def train(overrides: dict | None = None):
 
     # Physics Constants
     p_cfg = cfg["physics"]
-
-    ## Define tissue model
-
+    alphas = torch.tensor(p_cfg["alphas"], device=device, dtype=torch.float32)
+    mus = torch.tensor(p_cfg["mus"], device=device, dtype=torch.float32)
+    lam = float(p_cfg["lam"])
+    beta = float(p_cfg["beta"])
     b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float32)
 
-    # Loss weights
+    ## Define tissue model
+    # To define in accordently with the loss function
+    data_loader.load_physics(mus, alphas, beta, lam)
+
+    # Training Parameters
+    ## Loss weights
     cfg_w = cfg["training"]["loss_weights"]
     loss_weights = {
         "lambda_data": float(cfg_w["lambda_data"]),
@@ -110,15 +116,14 @@ def train(overrides: dict | None = None):
         "lambda_bc_tip": float(cfg_w["lambda_bc_tip"]),
     }
 
-    # Training Parameters
     epochs = int(cfg["training"]["adam_epochs"])
     raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
 
-    ## ADD MESH BORDER INDEX (assuming a square/cube)
-    raw_node_type[mesh.top_nodes] = 3  # type: ignore
-    raw_node_type[mesh.bottom_nodes] = 3  # type: ignore
-    raw_node_type[mesh.right_nodes] = 2  # type: ignore
-    raw_node_type[mesh.left_nodes] = 1  # type: ignore
+    ## Mesh border index assuming a square/cube
+    raw_node_type[mesh.top_nodes] = 3
+    raw_node_type[mesh.bottom_nodes] = 3
+    raw_node_type[mesh.right_nodes] = 2
+    raw_node_type[mesh.left_nodes] = 1
 
     node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
 
@@ -128,7 +133,7 @@ def train(overrides: dict | None = None):
     use_E = method in {"visco", "full"}
     use_S = method == "full"
 
-    # Training
+    # Training Loop
     logger.info("Start Hybrid MSG training...")
 
     for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
@@ -206,7 +211,3 @@ if __name__ == "__main__":
                 train(overrides)
     else:
         train()
-
-match input():
-    case "base":
-        print("base")

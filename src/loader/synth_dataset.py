@@ -150,9 +150,26 @@ def generate_ground_truth(
     separator = "-" * len(header)
 
     # Dataset values
-    psi_traj = torch.zeros(n_steps, dtype=torch.float64, device=device)
-    u_traj = torch.zeros((n_steps, mesh.n_nodes, 2), dtype=torch.float64, device=device)
-    F_traj = torch.zeros((n_steps, mesh.n_nodes, 2), dtype=torch.float64, device=device)
+    psi_traj = torch.zeros(
+        n_steps,
+        dtype=torch.float64,
+        device=device,
+    )
+    u_traj = torch.zeros(
+        (n_steps, mesh.n_nodes, 2),
+        dtype=torch.float64,
+        device=device,
+    )
+    grad_u_traj = torch.zeros(
+        (n_steps, mesh.n_elements, 2, 2),
+        dtype=torch.float64,
+        device=device,
+    )
+    F_traj = torch.zeros(
+        (n_steps, mesh.n_nodes, 2),
+        dtype=torch.float64,
+        device=device,
+    )
 
     def compute_total_energy(u_flat: torch.Tensor) -> torch.Tensor:
         u = u_flat.view(-1, 2)
@@ -166,7 +183,7 @@ def generate_ground_truth(
             lam=lam,
             kin=kin,
         )
-        psi = ogden.get_2Dpsi()
+        psi = ogden._get_2Dpsi()
         if torch.any(kin.J <= 0.0):
             # The mesh has inverted or collapsed in this candidate step
             print(
@@ -194,6 +211,7 @@ def generate_ground_truth(
         print(separator)
 
         nr_iter = 0
+        tollerance = 1e-6
         while True:  # Loop interaction
             # Enable the computational graph to use autograd
             current_u = u.detach().clone().requires_grad_(True)
@@ -220,9 +238,9 @@ def generate_ground_truth(
             # Check convergence
             res_norm = torch.norm(R).item()
             if nr_iter == 0:
-                res_0 = max(res_norm, 1e-6)
+                res_0 = max(res_norm, tollerance)
 
-            if (res_norm / res_0 < 1e-4) or (res_norm < 1e-7): # type: ignore
+            if (res_norm / res_0 < tollerance * 1e2) or (res_norm < tollerance):  # type: ignore
                 break
 
             # Update step
@@ -230,6 +248,7 @@ def generate_ground_truth(
                 delta_u_free = torch.linalg.solve(K, R)
                 alpha = 1.0
                 u_trial = u.clone()
+                # Secure smooth displacement blend
                 while alpha > 1e-4:
                     u_trial[mesh.free_dofs] = u[mesh.free_dofs] + alpha * delta_u_free
                     psi_trial = compute_total_energy(u_trial)
@@ -254,10 +273,12 @@ def generate_ground_truth(
 
         psi_traj[n] = psi_int
         u_traj[n] = u.view(-1, 2)
+        grad_u_traj[n] = compute_u_grad(u.view(-1, 2), mesh.elements, dN_dX)
         F_traj[n] = F_ext.view(-1, 2)
     dataset = {
         "time": t_eval.float().to(device),
         "nodes": mesh.nodes.to(device),
+        ###
         "elements": mesh.elements.to(device),
         "edges": mesh.edges.to(device),
         "boundary_nodes": mesh.boundary_nodes.to(device),
@@ -265,6 +286,8 @@ def generate_ground_truth(
         "right_nodes": mesh.right_nodes.to(device),
         "bottom_nodes": mesh.bottom_nodes.to(device),
         "top_nodes": mesh.top_nodes.to(device),
+        "grad_u": grad_u_traj,
+        ###
         "u": u_traj,
         "psi": psi_traj,
         "F_ext": F_traj,
