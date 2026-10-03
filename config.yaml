@@ -43,8 +43,12 @@ domain:
   ny: 10
   n_steps: 100
 training:
+  method: base
+  tr_loop: true
   device: cpu
   adam_epochs: 100
+  causal_epsilon_start: 0.01
+  causal_epsilon_end: 100.0
   loss_weights:
     lambda_data: 1.0
     lambda_haslach: 10.0
