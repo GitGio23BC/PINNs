@@ -9,10 +9,10 @@ class CSVLogger:
 
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
 
-        if not self.filepath.exists():
-            with open(self.filepath, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=self.fieldnames)
-                writer.writeheader()
+        #if not self.filepath.exists():
+        with open(self.filepath, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.fieldnames)
+            writer.writeheader()
 
     def log(self, metrics: dict):
         with open(self.filepath, "a", newline="") as f:

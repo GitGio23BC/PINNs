@@ -1,5 +1,9 @@
-from .mlp import ARCHITECTURE_REGISTRY
+from .architectures import ParametricPINN
+from .backbones import BACKBONE_REGISTRY
+from .mesh_graph_net import MeshGraphNet
 
 __all__ = [
-    "ARCHITECTURE_REGISTRY",
+    "BACKBONE_REGISTRY",
+    "MeshGraphNet",
+    "ParametricPINN",
 ]
