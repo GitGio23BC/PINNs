@@ -30,7 +30,7 @@ training:
 # DATA & SPATIO-TEMPORAL DOMAIN
 # ==========================================
 data:
-  dataset_name: "odgen_dataset.pt"
+  dataset_name: "inertial_dataset_sin.pt"
   data_dir: "./data/synt"
   batch_size: 1
   num_workers: 0

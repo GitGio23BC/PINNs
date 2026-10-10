@@ -9,11 +9,10 @@ import pandas as pd
 import torch
 
 from src.geometry import create_mesh, create_time_graph
-from src.loader import generate_ground_truth
+from src.loader import generate_steady_state_dataset
 from src.loss import rl2e
 from src.models import MeshGraphNet
 from src.physics import (
-    haslach_constitutive_residual_2D,
     pako_residual_2D,
 )
 from src.physics.equations import Kinematics, Ogden
@@ -40,7 +39,7 @@ def test(model_path: Path | None = None):
     dataset_path = data_dir / cfg["data"]["dataset_name"]
 
     if not dataset_path.exists():
-        dataset = generate_ground_truth(cfg, device=device)
+        dataset = generate_steady_state_dataset(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
 

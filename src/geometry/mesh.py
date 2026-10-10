@@ -131,9 +131,13 @@ def create_mesh(
         left_mask | right_mask | bottom_mask | top_mask, as_tuple=False
     ).squeeze(1)
 
-    fixed_dofs = torch.cat(
-        [2 * left_nodes, 2 * left_nodes + 1]
-    ).sort().values
+    # Free nodes (Diriclet)
+    left_x_dofs = 2 * left_nodes
+    left_y_coords = nodes[left_nodes, 1]
+    mid_idx = torch.argmin(torch.abs(left_y_coords - (height / 2.0)))
+    mid_left_node = left_nodes[mid_idx]
+    mid_left_y_dof = 2 * mid_left_node + 1
+    fixed_dofs = torch.cat([left_x_dofs, mid_left_y_dof.unsqueeze(0)]).sort().values
 
     total_dofs = 2 * nodes.shape[0]
     free_mask = torch.ones(total_dofs, dtype=torch.bool, device=device)
