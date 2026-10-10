@@ -6,27 +6,35 @@ from torch.optim import Adam
 from tqdm import tqdm
 
 from src.geometry import create_graph, create_mesh
-from src.loader import MGNData, generate_steady_state_dataset
+from src.loader import MGNData, generate_ground_truth
 from src.models import MeshGraphNet
 from src.utils import CSVLogger, deep_merge, init_logging, load_config, set_seed
 
+loss_pred = 0.0
+w = 1.0
+def compute_loss(l_weighted, w) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
 
-def compute_loss(*args) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-
-    # Weight Load
-
-    # Residual
-    u_pred = torch.zeros(1)
-
-    # Boundary conditions
+    l_data = data_loss(u_pred, u_exact, psi_pred, psi_exact)
+    l_dirichlet = dirichlet_loss(u_bc_pred)
+    l_neumann = neumann_loss(P, n_normal, F_ext)
+    l_pako = pako_loss(div_P, b, rho, u_tt)
 
     # Total Loss
-    total_loss = torch.zeros(1)
+    
+    l_step = lambda_data * l_data + lambda_dirichlet * l_dirichlet + lambda_neumann * l_neumann + 
+    lambda_pako * l_pako
+
+    l_weighted += w * l_step
+     
+    total_loss = torch.mean(l_weighted)
 
     # Metrics Log
     metrics = {"metric": 0.0}
+    
+    loss_prev += l_dirichlet + l_neumann + l_pako
+    w = torch.detach(torch.exp(-eps * loss_prev))
 
-    return total_loss, u_pred, metrics  # Eventually add other returns
+    return total_loss, metrics, w, l_weighted   # Eventually add other returns
 
 
 def train(overrides: dict | None = None):
@@ -61,7 +69,7 @@ def train(overrides: dict | None = None):
     dataset_path = data_dir / cfg["data"]["dataset_name"]
 
     if not dataset_path.exists():
-        dataset = generate_steady_state_dataset(cfg, device=device)
+        dataset = generate_ground_truth(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
     data_loader = MGNData(dataset)
@@ -99,7 +107,6 @@ def train(overrides: dict | None = None):
     lam = float(p_cfg["lam"])
     beta = float(p_cfg["beta"])
     b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float32)
-    rho = float(p_cfg["rho_0"])
 
     ## Define tissue model
     # To define in accordently with the loss function
@@ -149,9 +156,16 @@ def train(overrides: dict | None = None):
             ## CREATE GRAPH MUST BE REWORKED
             graph = create_graph(
                 mesh=mesh,  # type: ignore
+                u=u_prev,  # type: ignore # noqa: F821
                 node_type=node_type,  # type: ignore
+                t=t_norm,  # type: ignore # noqa: F821
                 device=device,  # type: ignore
+                trac=batch.trac if use_trac else None,  # type: ignore
+                u_dot=u_dot_prev if use_u_dot else None,  # type: ignore  # noqa: F821
+                E_prev=E_prev_voigt if use_E else None,  # type: ignore # noqa: F821
+                S_prev=S_prev_voigt if use_S else None,  # type: ignore # noqa: F821
             )
+
             # Add/return needed term accordantly to loss compute function
             total_loss, u_pred, metrics = compute_loss()
 
@@ -159,7 +173,7 @@ def train(overrides: dict | None = None):
             torch.nn.utils.clip_grad_norm_(mgn.parameters(), max_norm=1.0)
             optimizer.step()
 
-            # Update rollout prediction terms
+            # Update tollaoout prediction terms
 
             # Metrics
             metrics["step"] = t_step
@@ -205,3 +219,10 @@ if __name__ == "__main__":
                 train(overrides)
     else:
         train()
+<<<<<<< HEAD
+
+match input():
+    case "base":
+        print("base")
+=======
+>>>>>>> OdgenBranch/Dataset_Generation
