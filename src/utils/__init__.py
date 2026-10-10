@@ -1,7 +1,16 @@
 from .log_setup import deep_merge, init_logging, load_config
 from .metrics_logger import CSVLogger
 from .reproducibility import set_seed
-from .tensor_tools import check_tensor, d_dt, div, grad, voigt_tensor, voigt_to_tensor
+from .tensor_tools import (
+    check_tensor,
+    d_dt,
+    div,
+    grad,
+    stencil_grad,
+    triangle_shape_gradients,
+    voigt_tensor,
+    voigt_to_tensor,
+)
 
 __all__ = [
     "CSVLogger",
@@ -13,6 +22,8 @@ __all__ = [
     "init_logging",
     "load_config",
     "set_seed",
+    "stencil_grad",
+    "triangle_shape_gradients",
     "voigt_tensor",
     "voigt_to_tensor",
 ]

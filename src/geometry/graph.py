@@ -61,66 +61,15 @@ class Graph:
         return self.senders.shape[0]
 
 
-def create_time_graph(
-    mesh: Mesh,
-    u: torch.Tensor,
-    t: torch.Tensor,
-    device: torch.device | str = "cpu",
-) -> Graph:
-
-    ref = mesh.nodes.clone().detach()
-    ref.requires_grad_(True)
-    cur = ref + u
-
-    num_nodes = ref.shape[0]
-    t_feat = t.view(1, 1).expand(num_nodes, 1)
-
-    node_features = torch.cat([ref, cur, u, t_feat], dim=-1)
-
-    senders = []
-    receivers = []
-
-    senders = torch.cat([mesh.edges[:, 0], mesh.edges[:, 1]], dim=0).to(
-        device=device, dtype=torch.long
-    )
-    receivers = torch.cat([mesh.edges[:, 1], mesh.edges[:, 0]], dim=0).to(
-        device=device, dtype=torch.long
-    )
-
-    ref_rel = ref[senders] - ref[receivers]
-    ref_dist = torch.linalg.vector_norm(ref_rel, dim=-1, keepdim=True)
-
-    cur_rel = cur[senders] - cur[receivers]
-    cur_dist = torch.linalg.vector_norm(cur_rel, dim=-1, keepdim=True)
-
-    edge_features = torch.cat([ref_rel, ref_dist, cur_rel, cur_dist, ], dim=-1)
-    edge_features = edge_features.to(device=device, dtype=torch.float32)
-
-    return Graph(
-        mesh_nodes=ref,
-        senders=senders,
-        receivers=receivers,
-        node_features=node_features,
-        edge_features=edge_features,
-    )
-
-
 def create_graph(
     mesh: Mesh,
-    u: torch.Tensor,
-    t: float | torch.Tensor | None = None,
+    node_type: torch.Tensor,
+    world_pos: torch.Tensor,
     device: torch.device | str = "cpu",
 ) -> Graph:
 
-    ref = mesh.nodes.clone().detach()
-    ref.requires_grad_(True)
-    cur = ref + u
-
-
-    node_features = torch.cat([ref, cur, u], dim=-1)
-
-    senders = []
-    receivers = []
+    u = mesh.nodes.clone().to(device=device, dtype=torch.float64)
+    x = world_pos.clone().to(device=device, dtype=torch.float64)
 
     senders = torch.cat([mesh.edges[:, 0], mesh.edges[:, 1]], dim=0).to(
         device=device, dtype=torch.long
@@ -129,19 +78,23 @@ def create_graph(
         device=device, dtype=torch.long
     )
 
-    ref_rel = ref[senders] - ref[receivers]
-    ref_dist = torch.linalg.vector_norm(ref_rel, dim=-1, keepdim=True)
+    u_rel = u[senders] - u[receivers]
+    u_dist = torch.linalg.vector_norm(u_rel, dim=-1, keepdim=True)
 
-    cur_rel = cur[senders] - cur[receivers]
-    cur_dist = torch.linalg.vector_norm(cur_rel, dim=-1, keepdim=True)
+    x_rel = x[senders] - x[receivers]
+    x_dist = torch.linalg.vector_norm(x_rel, dim=-1, keepdim=True)
 
-    edge_features = torch.cat([ref_rel, ref_dist, cur_rel, cur_dist], dim=-1)
-    edge_features = edge_features.to(device=device, dtype=torch.float32)
+    node_type = node_type.to(device=device, dtype=torch.float64)
+    node_features = torch.cat([node_type], dim=-1)
+
+    edge_features = torch.cat([u_rel, u_dist, x_rel, x_dist], dim=-1)
+    edge_features = edge_features.to(device=device, dtype=torch.float64)
 
     return Graph(
-        mesh_nodes=ref,
+        mesh_nodes=u,
         senders=senders,
         receivers=receivers,
         node_features=node_features,
         edge_features=edge_features,
     )
+

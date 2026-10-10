@@ -6,7 +6,7 @@ import torch
 from matplotlib import animation
 
 from src.geometry import create_mesh
-from src.loader import generate_ground_truth
+from src.loader import generate_inertial_dataset
 from src.utils import init_logging, load_config
 
 
@@ -26,7 +26,7 @@ def animate_ground_truth(
 
     if not dataset_path.exists():
         print(f"Dataset not found at {dataset_path}. Generating now...")
-        dataset = generate_ground_truth(cfg, device=device)
+        dataset = generate_inertial_dataset(cfg, device=device)
     else:
         print(f"Loading dataset from: {dataset_path}")
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
