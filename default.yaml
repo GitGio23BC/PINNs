@@ -16,11 +16,7 @@ physics:
   beta: 9.0 # Search for the tissue one
   rho_0: 1000.0 # Search for the tissue one
   body_force: [0.0, 0.0]
-<<<<<<< HEAD
-  sigma_max: 1.0
-=======
   sigma_max: 10.0
->>>>>>> OdgenBranch/Dataset_Generation
 
 # ==========================================
 # MODEL CONFIGURATION
@@ -39,11 +35,7 @@ model:
 # DATA & SPATIO-TEMPORAL DOMAIN
 # ==========================================
 data:
-<<<<<<< HEAD
-  dataset_name: "ground_truth_2D.pt"
-=======
   dataset_name: "ground_truth.pt"
->>>>>>> OdgenBranch/Dataset_Generation
   data_dir: "./data/synt"
   batch_size: 1
   num_workers: 0

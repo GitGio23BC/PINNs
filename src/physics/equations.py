@@ -6,10 +6,16 @@ class Kinematics:
         self.grad_u = grad_u
         dim = grad_u.shape[-1]
         self.I = torch.eye(dim, device=grad_u.device, dtype=grad_u.dtype).unsqueeze(0)
-        self.F = self.I + self.grad_u
-        self.C = self.F.mT @ self.F
-        self.E = 0.5 * (self.C - self.I)
-        self.J = torch.linalg.det(self.F).clamp(min=1e-8)
+        self.F_base = self.I + self.grad_u
+        
+        self.E = 0.5 * (self.F_base.mT @ self.F_base - self.I)
+        self.C = 2.0 * self.E + self.I
+        det_C = (
+            self.C[..., 0, 0] * self.C[..., 1, 1]
+            - self.C[..., 0, 1] * self.C[..., 1, 0]
+        )
+        self.J = torch.sqrt(torch.clamp(det_C, min=1e-8))
+        self.F = self.F_base
 
     def compute_P(self, S: torch.Tensor) -> torch.Tensor:
         return self.F @ S
@@ -41,11 +47,11 @@ class Ogden:
         self.g, self.Jg_J, self.Jg_JJ = self.get_g()
 
     def get_g(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        self.g = self.beta ** (-2) * (
+        self.g = self.beta ** (-2.0) * (
             self.beta * torch.log(self.kin.J) + self.kin.J ** (-self.beta) - 1.0
         )
-        self.Jg_J = -(self.kin.J ** (-self.beta) - 1) / (self.beta)
-        self.Jg_JJ = self.kin.J ** (-self.beta - 1)
+        self.Jg_J = -(self.kin.J ** (-self.beta) - 1.0) / (self.beta)
+        self.Jg_JJ = self.kin.J ** (-self.beta - 1.0)
 
         return self.g, self.Jg_J, self.Jg_JJ
 
@@ -65,10 +71,9 @@ class Ogden:
 
         lam_1 = torch.sqrt(torch.clamp(eig_1, min=1e-8))
         lam_2 = torch.sqrt(torch.clamp(eig_2, min=1e-8))
-        lam_2D = torch.stack([lam_1, lam_2], dim=-1)
+        lam_3 = torch.ones_like(lam_1)
 
-        ones = torch.ones_like(lam_2D[..., :1])
-        return torch.cat([lam_2D, ones], dim=-1)
+        return torch.stack([lam_1, lam_2, lam_3], dim=-1)
 
     def _get_2Dpsi(self) -> torch.Tensor:
         """ONLY FOR DATASET GENERSTION"""
@@ -84,10 +89,10 @@ class Ogden:
         psi = psi_deviatronic + psi_volumetric
 
         return psi
-    
-    def get_S(self, E: torch.Tensor) -> torch.Tensor:
+
+    def get_S(self, psi: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
         return torch.autograd.grad(
-            self.psi, E, grad_outputs=torch.ones_like(E), create_graph=True
+            outputs=psi, inputs=E, create_graph=True
         )[0]
 
     def hills_constitutive_inequality(

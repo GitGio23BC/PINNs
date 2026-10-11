@@ -8,7 +8,7 @@ import torch
 from matplotlib import animation
 
 from src.geometry import create_mesh, create_time_graph
-from src.loader import generate_ground_truth
+from src.loader import generate_steady_state_dataset
 from src.models import MeshGraphNet
 from src.utils import init_logging, load_config
 
@@ -67,7 +67,7 @@ def animate_deformation(
 
     if not dataset_path.exists():
         print(f"Dataset not found at {dataset_path}. Generating now...")
-        dataset = generate_ground_truth(cfg, device=device)
+        dataset = generate_steady_state_dataset(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
 

@@ -10,6 +10,7 @@ from src.loader import MGNData, generate_ground_truth
 from src.models import MeshGraphNet
 from src.utils import CSVLogger, deep_merge, init_logging, load_config, set_seed
 
+<<<<<<< HEAD
 #PIETRO
 def compute_loss(*args) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
 
@@ -19,14 +20,33 @@ def compute_loss(*args) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
     u_pred = torch.zeros(1)
 
     # Boundary conditions
+=======
+loss_pred = 0.0
+w = 1.0
+def compute_loss(l_weighted, w) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+
+    l_data = data_loss(u_pred, u_exact, psi_pred, psi_exact)
+    l_dirichlet = dirichlet_loss(u_bc_pred)
+    l_neumann = neumann_loss(P, n_normal, F_ext)
+    l_pako = pako_loss(div_P, b, rho, u_tt)
+>>>>>>> a8ac6895ca9d332c901b9fa6ece7a7ffe2b36876
 
     # Total Loss
-    total_loss = torch.zeros(1)
+    
+    l_step = lambda_data * l_data + lambda_dirichlet * l_dirichlet + lambda_neumann * l_neumann + 
+    lambda_pako * l_pako
+
+    l_weighted += w * l_step
+     
+    total_loss = torch.mean(l_weighted)
 
     # Metrics Log
     metrics = {"metric": 0.0}
+    
+    loss_prev += l_dirichlet + l_neumann + l_pako
+    w = torch.detach(torch.exp(-eps * loss_prev))
 
-    return total_loss, u_pred, metrics  # Eventually add other returns
+    return total_loss, metrics, w, l_weighted   # Eventually add other returns
 
 #OK OK OK
 def train(overrides: dict | None = None):
@@ -81,10 +101,17 @@ def train(overrides: dict | None = None):
         device=device,
     )
 
+<<<<<<< HEAD
     # Model OK
     mgn = MeshGraphNet().to(device)
 
     ## Add Ansatz check (optional) PE MO LO SALTIAMO C'è GIA SCRITTO OPTIONAL, VAFFANCULO MATTè À ÀÔ ÔÈ
+=======
+    # Model
+    mgn = MeshGraphNet().to(device)
+
+    ## Add Ansatz check (optional)
+>>>>>>> a8ac6895ca9d332c901b9fa6ece7a7ffe2b36876
 
     optimizer = Adam(
         mgn.parameters(),

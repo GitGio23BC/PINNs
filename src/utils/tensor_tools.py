@@ -136,3 +136,58 @@ def d_dt(E: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
             cols.append(dE_ij_dt)
         rows.append(torch.cat(cols, dim=-1))
     return torch.stack(rows, dim=1)
+
+
+def triangle_shape_gradients(
+    nodes: torch.Tensor, elements: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+
+    elem_coords = nodes[elements]
+    x = elem_coords[:, :, 0]
+    y = elem_coords[:, :, 1]
+
+    # A = det(x-y)/2
+    two_area = (
+        x[:, 0] * (y[:, 1] - y[:, 2])
+        + x[:, 1] * (y[:, 2] - y[:, 0])
+        + x[:, 2] * (y[:, 0] - y[:, 1])
+    )
+
+    areas = 0.5 * two_area
+
+    # x stencil derivatives dN_I / dX
+    b = torch.stack(
+        [
+            y[:, 1] - y[:, 2],
+            y[:, 2] - y[:, 0],
+            y[:, 0] - y[:, 1],
+        ],
+        dim=1,
+    ) / two_area.unsqueeze(1)
+
+    # y stencil derivatives dN_I / dY
+    c = torch.stack(
+        [
+            x[:, 2] - x[:, 1],
+            x[:, 0] - x[:, 2],
+            x[:, 1] - x[:, 0],
+        ],
+        dim=1,
+    ) / two_area.unsqueeze(1)
+
+    dN_dX = torch.stack([b, c], dim=-1)
+
+    return dN_dX, areas
+
+
+def stencil_grad(
+    y: torch.Tensor, elements: torch.Tensor, dN_dX: torch.Tensor
+) -> torch.Tensor:
+
+    # Get each element value
+    y_elem = y[elements]
+
+    # grad_y = u_elem^T @ dN_dX for each node a
+    grad_u = torch.einsum("eai, eaj -> eij", y_elem, dN_dX)
+
+    return grad_u
