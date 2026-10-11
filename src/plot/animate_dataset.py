@@ -20,7 +20,7 @@ def animate_ground_truth(
     output_dir = Path(cfg.get("output_dir", "./output"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Dataset
+    # Dataset loading / generation
     data_dir = Path(cfg["data"]["data_dir"])
     dataset_path = data_dir / cfg["data"]["dataset_name"]
 
@@ -32,10 +32,9 @@ def animate_ground_truth(
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
 
     time_grid = dataset["time"].cpu().numpy()
-    u_exact_traj = dataset["u"].cpu().numpy()        
-    F_ext_traj = dataset["F_ext"].cpu().numpy()    
+    u_exact_traj = dataset["u"].cpu().numpy()
 
-    # Mesh
+    # Mesh creation
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
     nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
@@ -52,7 +51,21 @@ def animate_ground_truth(
     elements = mesh.elements.cpu().numpy()
     num_frames = len(time_grid)
 
-    # Get max displacement and margin
+    F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float64)
+
+    if "F_ext" in dataset:
+        F_ext_traj = dataset["F_ext"].cpu().numpy()
+    elif "trac_ext" in dataset:
+        trac_traj = dataset["trac_ext"].cpu().numpy()  
+        right_nodes = mesh.right_nodes.cpu().numpy()
+        right_lengths = mesh.right_lengths.cpu().numpy()
+
+        if trac_traj.ndim == 3:
+            F_ext_traj[:, right_nodes, :] = trac_traj * right_lengths[None, :, None]
+        elif trac_traj.ndim == 2:
+            F_ext_traj[:, right_nodes, :] = trac_traj[:, None, :] * right_lengths[None, :, None]
+
+    # Calculate bounding box & color limits
     mag_exact = np.linalg.norm(u_exact_traj, axis=-1)
     vmax = max(mag_exact.max(), 1e-4)
 
@@ -64,7 +77,7 @@ def animate_ground_truth(
     xlim = (all_x.min() - margin_x, all_x.max() + margin_x)
     ylim = (all_y.min() - margin_y, all_y.max() + margin_y)
 
-    # Plot
+    # Plot setup
     fig, ax = plt.subplots(figsize=(8, 6))
 
     sm = plt.cm.ScalarMappable(
@@ -96,9 +109,9 @@ def animate_ground_truth(
             vmin=0.0,
             vmax=vmax,
             shading="gouraud",
-        ) # pyright: ignore[reportCallIssue]
+        ) # type: ignore
 
-        # Mesh plot
+        # Mesh wireframe plot
         ax.triplot(
             pos_current[:, 0],
             pos_current[:, 1],
@@ -108,7 +121,7 @@ def animate_ground_truth(
             linewidth=0.8,
         )
 
-        # Plot F_ext
+        # Plot applied external force vectors
         f_current = F_ext_traj[frame]
         f_norm = np.linalg.norm(f_current, axis=-1)
         active_nodes = f_norm > 1e-8

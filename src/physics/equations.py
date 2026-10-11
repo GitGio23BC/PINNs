@@ -7,14 +7,15 @@ class Kinematics:
         dim = grad_u.shape[-1]
         self.I = torch.eye(dim, device=grad_u.device, dtype=grad_u.dtype).unsqueeze(0)
         self.F_base = self.I + self.grad_u
-        
+
         self.E = 0.5 * (self.F_base.mT @ self.F_base - self.I)
         self.C = 2.0 * self.E + self.I
         det_C = (
             self.C[..., 0, 0] * self.C[..., 1, 1]
             - self.C[..., 0, 1] * self.C[..., 1, 0]
         )
-        self.J = torch.sqrt(torch.clamp(det_C, min=1e-8))
+        det_C_safe = 0.5 * (det_C + torch.sqrt(det_C**2 + 1e-8))
+        self.J = torch.sqrt(det_C_safe + 1e-8)
         self.F = self.F_base
 
     def compute_P(self, S: torch.Tensor) -> torch.Tensor:
@@ -31,29 +32,27 @@ class Kinematics:
 class Ogden:
     def __init__(
         self,
-        psi: torch.Tensor,
         mus: torch.Tensor,
         alphas: torch.Tensor,
         beta: float,
         lam: float,
         kin: Kinematics,
     ):
-        self.psi = psi  # Model output
         self.mus = mus  # Hidden layer
         self.alphas = alphas  # Hidden layer
         self.beta = beta  # Hidden layer
-        self.lam = lam
+        self.lam = lam  # Hidden layer
         self.kin = kin
-        self.g, self.Jg_J, self.Jg_JJ = self.get_g()
+        self.psi = None
 
     def get_g(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        self.g = self.beta ** (-2.0) * (
+        g = self.beta ** (-2.0) * (
             self.beta * torch.log(self.kin.J) + self.kin.J ** (-self.beta) - 1.0
         )
-        self.Jg_J = -(self.kin.J ** (-self.beta) - 1.0) / (self.beta)
-        self.Jg_JJ = self.kin.J ** (-self.beta - 1.0)
+        Jg_J = -(self.kin.J ** (-self.beta) - 1.0) / self.beta
+        Jg_JJ = self.kin.J ** (-self.beta - 1.0)
 
-        return self.g, self.Jg_J, self.Jg_JJ
+        return g, Jg_J, Jg_JJ
 
     def get_principal_stretches(self, eps: float = 1e-12) -> torch.Tensor:
         # Compute the eigenvalues using analytic formula
@@ -75,8 +74,7 @@ class Ogden:
 
         return torch.stack([lam_1, lam_2, lam_3], dim=-1)
 
-    def _get_2Dpsi(self) -> torch.Tensor:
-        """ONLY FOR DATASET GENERSTION"""
+    def get_2Dpsi(self) -> torch.Tensor:
         lam_princ = self.get_principal_stretches()
 
         lam_pow = lam_princ.unsqueeze(-1) ** self.alphas
@@ -86,20 +84,30 @@ class Ogden:
         )
         psi_volumetric = self.lam * self.get_g()[0]
 
-        psi = psi_deviatronic + psi_volumetric
+        self.psi = psi_deviatronic + psi_volumetric
 
-        return psi
+        return self.psi
 
-    def get_S(self, psi: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
-        return torch.autograd.grad(
-            outputs=psi, inputs=E, create_graph=True
+    def get_S(
+        self,
+    ) -> torch.Tensor:
+        if self.psi is None:
+            self.get_2Dpsi()
+
+        S = torch.autograd.grad(
+            outputs=self.psi.sum(),  # type: ignore
+            inputs=self.kin.E,
+            create_graph=True,
+            retain_graph=True,
         )[0]
+        return S
 
     def hills_constitutive_inequality(
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        _, _, Jg_JJ = self.get_g()
         return (
             torch.all(self.mus * self.alphas > 0),
-            torch.tensor(self.beta > 0),
-            torch.all(self.kin.J * self.Jg_JJ > 0),
+            torch.tensor(self.beta > 0, device=self.mus.device),
+            torch.all(self.kin.J * Jg_JJ > 0),
         )

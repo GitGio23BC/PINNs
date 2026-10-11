@@ -30,15 +30,23 @@ class Mesh:
 
     nodes: torch.Tensor
     elements: torch.Tensor
+    elements_area: torch.Tensor
     edges: torch.Tensor
     boundary_nodes: torch.Tensor
     left_nodes: torch.Tensor
     right_nodes: torch.Tensor
     bottom_nodes: torch.Tensor
     top_nodes: torch.Tensor
+    left_elements: torch.Tensor
+    right_elements: torch.Tensor
+    bottom_elements: torch.Tensor
+    top_elements: torch.Tensor
+    left_lengths: torch.Tensor
+    right_lengths: torch.Tensor
+    bottom_lengths: torch.Tensor
+    top_lengths: torch.Tensor
     fixed_dofs: torch.Tensor
     free_dofs: torch.Tensor
-
     @property
     def n_nodes(self) -> int:
         return self.nodes.shape[0]
@@ -54,6 +62,19 @@ class Mesh:
     @property
     def n_dofs(self) -> int:
         return 2 * self.nodes.shape[0]
+
+
+def get_face_length(face_nodes, nodes):
+    if len(face_nodes) < 2:
+        return torch.zeros(len(face_nodes), dtype=nodes.dtype, device=nodes.device)
+    coords = nodes[face_nodes]
+    edge_lengths = torch.linalg.vector_norm(coords[1:] - coords[:-1], dim=1)
+
+    lengths = torch.zeros(len(face_nodes), dtype=nodes.dtype, device=nodes.device)
+    lengths[0] = 0.5 * edge_lengths[0]
+    lengths[-1] = 0.5 * edge_lengths[-1]
+    lengths[1:-1] = 0.5 * (edge_lengths[:-1] + edge_lengths[1:])
+    return lengths
 
 
 def create_mesh(
@@ -127,16 +148,53 @@ def create_mesh(
     bottom_nodes = torch.nonzero(bottom_mask, as_tuple=False).squeeze(1)
     top_nodes = torch.nonzero(top_mask, as_tuple=False).squeeze(1)
 
+    left_nodes = left_nodes[torch.argsort(nodes[left_nodes, 1])]
+    right_nodes = right_nodes[torch.argsort(nodes[right_nodes, 1])]
+    bottom_nodes = bottom_nodes[torch.argsort(nodes[bottom_nodes, 0])]
+    top_nodes = top_nodes[torch.argsort(nodes[top_nodes, 0])]
+
     boundary_nodes = torch.nonzero(
         left_mask | right_mask | bottom_mask | top_mask, as_tuple=False
     ).squeeze(1)
 
-    # Free nodes (Diriclet)
+    left_elements = torch.nonzero(
+        left_mask[elements].sum(dim=1) == 2, as_tuple=False
+    ).squeeze(1)
+    right_elements = torch.nonzero(
+        right_mask[elements].sum(dim=1) == 2, as_tuple=False
+    ).squeeze(1)
+    bottom_elements = torch.nonzero(
+        bottom_mask[elements].sum(dim=1) == 2, as_tuple=False
+    ).squeeze(1)
+    top_elements = torch.nonzero(
+        top_mask[elements].sum(dim=1) == 2, as_tuple=False
+    ).squeeze(1)
+
+    # Geometry terms
+    ## Elements Areas = |(p1-p0) x (p2-po)|/2
+    p0 = nodes[elements[:, 0]]
+    p1 = nodes[elements[:, 1]]
+    p2 = nodes[elements[:, 2]]
+
+    Ae = 0.5 * (
+        (p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1])
+        - (p1[:, 1] - p0[:, 1]) * (p2[:, 0] - p0[:, 0])
+    )
+    elements_area = torch.abs(Ae)
+
+    ## Border length
+    right_lengths = get_face_length(right_nodes, nodes)
+    left_lengths = get_face_length(left_nodes, nodes)
+    bottom_lengths = get_face_length(bottom_nodes, nodes)
+    top_lengths = get_face_length(top_nodes, nodes)
+
+    ## Free and Fixed DOF (Diriclet)
     left_x_dofs = 2 * left_nodes
-    left_y_coords = nodes[left_nodes, 1]
-    mid_idx = torch.argmin(torch.abs(left_y_coords - (height / 2.0)))
+
+    mid_idx = len(left_nodes) // 2
     mid_left_node = left_nodes[mid_idx]
     mid_left_y_dof = 2 * mid_left_node + 1
+
     fixed_dofs = torch.cat([left_x_dofs, mid_left_y_dof.unsqueeze(0)]).sort().values
 
     total_dofs = 2 * nodes.shape[0]
@@ -147,12 +205,21 @@ def create_mesh(
     return Mesh(
         nodes=nodes,
         elements=elements,
+        elements_area=elements_area,
         edges=edges,
         boundary_nodes=boundary_nodes,
         left_nodes=left_nodes,
         right_nodes=right_nodes,
         bottom_nodes=bottom_nodes,
         top_nodes=top_nodes,
+        left_elements=left_elements,
+        right_elements=right_elements,
+        bottom_elements=bottom_elements,
+        top_elements=top_elements,
+        left_lengths=left_lengths,
+        right_lengths=right_lengths,
+        bottom_lengths=bottom_lengths,
+        top_lengths=top_lengths,
         fixed_dofs=fixed_dofs,
         free_dofs=free_dofs,
     )

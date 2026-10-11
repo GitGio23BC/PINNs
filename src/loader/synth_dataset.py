@@ -10,23 +10,14 @@ from ..utils import stencil_grad, triangle_shape_gradients
 
 
 def compute_lumped_mass_matrix(mesh: Mesh, rho: float, dim: int = 2) -> torch.Tensor:
-    elem_coords = mesh.nodes[mesh.elements]
-    xe = elem_coords[:, :, 0]
-    ye = elem_coords[:, :, 1]
 
     nodal_masses = torch.zeros(
         mesh.n_nodes,
-        dtype=elem_coords.dtype,
-        device=elem_coords.device,
+        dtype=mesh.nodes.dtype,
+        device=mesh.nodes.device,
     )
 
-    # A = det(x-y)/2
-    Ae = 0.5 * (
-        xe[:, 0] * (ye[:, 1] - ye[:, 2])
-        + xe[:, 1] * (ye[:, 2] - ye[:, 0])
-        + xe[:, 2] * (ye[:, 0] - ye[:, 1])
-    )
-
+    Ae = mesh.elements_area
     element_masses = rho * Ae
 
     mass_per_corner = element_masses / 3.0
@@ -43,32 +34,19 @@ def compute_external_force(
     T: float,
     mesh: Mesh,
     sigma_max: float,
-    height: float,
-    ny: int,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     F_ext = torch.zeros(mesh.n_dofs, dtype=torch.float64, device=mesh.nodes.device)
 
     # Magnitude (N/m)
-    traction_mag = sigma_max * torch.sin(torch.pi * t_n/T)
-    # Edge "area"
-    dy = height / ny
+    trac_ext = sigma_max * torch.sin(torch.pi * t_n / T)
+    trac_vec = torch.tensor(
+        [trac_ext, 0.0], dtype=torch.float64, device=mesh.nodes.device
+    )
 
-    # Sorting by y-coordinate
-    right_node_indices = mesh.right_nodes
-    y_coords = mesh.nodes[right_node_indices, 1]
-    sorted_order = torch.argsort(y_coords)
-    sorted_right_nodes = right_node_indices[sorted_order]
+    right_dofs_x = 2 * mesh.right_nodes
+    F_ext[right_dofs_x] = trac_ext * mesh.right_lengths
 
-    num_r_nodes = len(sorted_right_nodes)
-
-    for idx, node_id in enumerate(sorted_right_nodes):
-        segment_length = 0.5 * dy if idx in (0, num_r_nodes - 1) else dy
-
-        # Pulled alonge x-direction:
-        dof_x = 2 * node_id
-        F_ext[dof_x] = traction_mag * segment_length
-
-    return F_ext
+    return F_ext, trac_vec
 
 
 def generate_steady_state_dataset(
@@ -95,30 +73,41 @@ def generate_steady_state_dataset(
         height=height,
         nx=nx,
         ny=ny,
-        device="cpu",
+        device=device,
     )
 
     # Temporal Grid
     t0, t_final = cfg["domain"]["t_range"]
     n_steps = int(cfg["domain"]["n_steps"])
-    t_eval = torch.linspace(float(t0), float(t_final), n_steps)
+    t_eval = torch.linspace(float(t0), float(t_final), n_steps, device=device)
 
     # Physics Constants
     phys_cfg = cfg["physics"]
     sigma_max = float(phys_cfg["sigma_max"])
 
     # Odgen coefficient
-    alphas_ogden = torch.tensor(phys_cfg["alphas"], dtype=torch.float64)
-    mus_list = [float(mu) for mu in phys_cfg["mus"]]
-    mus_ogden = torch.tensor(mus_list, dtype=torch.float64)
+    tissue = phys_cfg["tissue"]
+    alphas_ogden = torch.tensor(
+        phys_cfg["alphas"][tissue], dtype=torch.float64, device=device
+    )
+    mus_list = [float(mu) for mu in phys_cfg["mus"][tissue]]
+    mus_ogden = torch.tensor(mus_list, dtype=torch.float64, device=device)
 
     # Volumetric parameters
     lambda_ogden = float(phys_cfg["lambda"])
     beta_ogden = float(phys_cfg["beta"])
 
     # FEM values initialisation
-    u = torch.zeros(mesh.n_dofs, dtype=torch.float64)
-    current_u = torch.zeros(mesh.n_dofs, dtype=torch.float64)
+    u = torch.zeros(
+        mesh.n_dofs,
+        dtype=torch.float64,
+        device=device,
+    )
+    current_u = torch.zeros(
+        mesh.n_dofs,
+        dtype=torch.float64,
+        device=device,
+    )
 
     dN_dX, areas = triangle_shape_gradients(mesh.nodes, mesh.elements)
     header = f"{'Iter':>5} | {'||R||':>12} | {'||delta_u||':>12} | {'Max |u|':>10}"
@@ -152,14 +141,13 @@ def generate_steady_state_dataset(
         grad_u = stencil_grad(u, mesh.elements, dN_dX)
         kin = Kinematics(grad_u)
         ogden = Ogden(
-            psi=torch.zeros(0),
             mus=mus_ogden,
             alphas=alphas_ogden,
             beta=beta_ogden,
             lam=lambda_ogden,
             kin=kin,
         )
-        psi = ogden._get_2Dpsi()
+        psi = ogden.get_2Dpsi()
         if torch.any(kin.J <= 0.0):
             # The mesh has inverted or collapsed in this candidate step
             print(
@@ -169,13 +157,11 @@ def generate_steady_state_dataset(
 
     for n in range(n_steps):  # Newton-Raphson loop
         t_n = t_eval[n]
-        F_ext = compute_external_force(
+        F_ext, _ = compute_external_force(
             t_n,
             t_final,
             mesh,
             sigma_max,
-            height,
-            ny,
         )
         f_ext_norm = torch.norm(F_ext).item()
 
@@ -296,25 +282,27 @@ def generate_inertial_dataset(
         height=height,
         nx=nx,
         ny=ny,
-        device="cpu",
+        device=device,
     )
-
     # Temporal Grid
     t0, t_final = cfg["domain"]["t_range"]
     n_steps = int(cfg["domain"]["n_steps"])
-    t_eval = torch.linspace(float(t0), float(t_final), n_steps)
+    t_eval = torch.linspace(float(t0), float(t_final), n_steps, device=device)
 
     # Physics Constants
     phys_cfg = cfg["physics"]
     sigma_max = float(phys_cfg["sigma_max"])
 
     # Odgen coefficient
-    alphas_ogden = torch.tensor(phys_cfg["alphas"], dtype=torch.float64)
-    mus_list = [float(mu) for mu in phys_cfg["mus"]]
-    mus_ogden = torch.tensor(mus_list, dtype=torch.float64)
+    tissue = phys_cfg["tissue"]
+    alphas_ogden = torch.tensor(
+        phys_cfg["alphas"][tissue], dtype=torch.float64, device=device
+    )
+    mus_list = [float(mu) for mu in phys_cfg["mus"][tissue]]
+    mus_ogden = torch.tensor(mus_list, dtype=torch.float64, device=device)
 
     # Volumetric parameters
-    lambda_ogden = float(phys_cfg["lambda"])
+    lambda_ogden = float(phys_cfg["lam"])
     beta_ogden = float(phys_cfg["beta"])
     rho = float(phys_cfg["rho_0"])
     M = compute_lumped_mass_matrix(mesh, rho)
@@ -335,7 +323,11 @@ def generate_inertial_dataset(
     beta_rayleigh = 2.0 * ζ * (ω_max * ω_min) / (ω_max + ω_min)
 
     # FEM values initialisation
-    u = torch.zeros(mesh.n_dofs, dtype=torch.float64)
+    u = torch.zeros(
+        mesh.n_dofs,
+        dtype=torch.float64,
+        device=device,
+    )
 
     dN_dX, areas = triangle_shape_gradients(mesh.nodes, mesh.elements)
     dt = (t_final - t0) / (n_steps - 1)
@@ -378,8 +370,13 @@ def generate_inertial_dataset(
         dtype=torch.float64,
         device=device,
     )
-    F_traj = torch.zeros(
-        (n_steps, mesh.n_nodes, 2),
+    u_fixed = torch.zeros(
+        (n_steps, *mesh.fixed_dofs.shape),
+        dtype=torch.float64,
+        device=device,
+    )
+    trac_traj = torch.zeros(
+        (n_steps, len(mesh.right_nodes), 2),
         dtype=torch.float64,
         device=device,
     )
@@ -399,14 +396,13 @@ def generate_inertial_dataset(
         grad_u = stencil_grad(u, mesh.elements, dN_dX)
         kin = Kinematics(grad_u)
         ogden = Ogden(
-            psi=torch.zeros(0),
             mus=mus_ogden,
             alphas=alphas_ogden,
             beta=beta_ogden,
             lam=lambda_ogden,
             kin=kin,
         )
-        psi = ogden._get_2Dpsi()
+        psi = ogden.get_2Dpsi()
         if torch.any(kin.J <= 0.0):
             # The mesh has inverted or collapsed in this candidate step
             print(
@@ -416,13 +412,11 @@ def generate_inertial_dataset(
 
     for n in range(n_steps):  # Newton-Raphson loop
         t_n = t_eval[n]
-        F_ext = compute_external_force(
+        F_ext, trac_ext = compute_external_force(
             t_n,
             t_final,
             mesh,
             sigma_max,
-            height,
-            ny,
         )
         f_ext_norm = torch.norm(F_ext).item()
 
@@ -434,9 +428,9 @@ def generate_inertial_dataset(
         print(separator)
 
         # Take previous step values (note, if n=0 then it will take the last time step, but it is all zeros so all it's fine, do not worry guys, all will work, I hope)
-        u_prev = u_traj[n - 1].reshape(-1)
-        u_t_prev = u_t_traj[n - 1].reshape(-1)
-        u_tt_prev = u_tt_traj[n - 1].reshape(-1)
+        u_prev = u_traj[n - 1].reshape(-1).to(device)
+        u_t_prev = u_t_traj[n - 1].reshape(-1).to(device)
+        u_tt_prev = u_tt_traj[n - 1].reshape(-1).to(device)
 
         nr_iter = 0
         norm_R0 = 0
@@ -522,7 +516,7 @@ def generate_inertial_dataset(
         u_t_traj[n] = current_u_t.detach().view(-1, 2)
         u_tt_traj[n] = current_u_tt.detach().view(-1, 2)
         grad_u_traj[n] = stencil_grad(u.view(-1, 2), mesh.elements, dN_dX)
-        F_traj[n] = F_ext.view(-1, 2)
+        trac_traj[n] = trac_ext.unsqueeze(0).expand(len(mesh.right_nodes), 2)
 
     dataset = {
         "time": t_eval.float().to(device),
@@ -535,13 +529,16 @@ def generate_inertial_dataset(
         "right_nodes": mesh.right_nodes.to(device),
         "bottom_nodes": mesh.bottom_nodes.to(device),
         "top_nodes": mesh.top_nodes.to(device),
-        "grad_u": grad_u_traj,
+        "grad_u": grad_u_traj.to(device),
         ###
-        "u": u_traj,
-        "u_t": u_t_traj,
-        "u_tt": u_tt_traj,
-        "psi": psi_traj,
-        "F_ext": F_traj,
+        "u_t": u_t_traj.to(device),
+        "u_tt": u_tt_traj.to(device),
+        ###
+        "u_fixed": u_fixed.to(device),
+        ###
+        "u": u_traj.to(device),
+        "psi": psi_traj.to(device),
+        "trac_ext": trac_traj.to(device),
     }
     torch.save(dataset, save_file)
     return dataset

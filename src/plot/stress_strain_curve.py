@@ -39,18 +39,18 @@ def stress_strain_curve(
 
     # Odgen model definition
     p_cfg = cfg["physics"]
-    alphas = torch.tensor(p_cfg["alphas"], device=device)
-    mus_list = [float(mu) for mu in p_cfg["mus"]]
-    mus = torch.tensor(mus_list, dtype=torch.float64, device=device)
-    lam = float(p_cfg["lambda"])
+    tissue = p_cfg["tissue"]
+    alphas = torch.tensor(p_cfg["alphas"][tissue], dtype=torch.float64)
+    mus_list = [float(mu) for mu in p_cfg["mus"][tissue]]
+    mus = torch.tensor(mus_list, dtype=torch.float64)
+    lam = float(p_cfg["lam"])
     beta = float(p_cfg["beta"])
 
     # Compute energy density and differentiate
-    ogden = Ogden(torch.zeros(1), mus, alphas, beta, lam, kin)
-    psi = ogden._get_2Dpsi()
+    ogden = Ogden(mus, alphas, beta, lam, kin)
 
     # Compute stress
-    S = ogden.get_S(psi.sum(), kin.E)
+    S = ogden.get_S()
     sigma = kin.compute_sigma(S)
 
     # Body average values

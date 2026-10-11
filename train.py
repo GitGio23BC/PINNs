@@ -1,32 +1,84 @@
 import logging
+import math
 from pathlib import Path
 
 import torch
 from torch.optim import Adam
 from tqdm import tqdm
 
-from src.geometry import create_graph, create_mesh
-from src.loader import MGNData, generate_steady_state_dataset
+from src.geometry import Mesh, create_graph, create_mesh
+from src.loader import MGNBatch, MGNData, generate_inertial_dataset
+from src.loss import *
 from src.models import MeshGraphNet
-from src.utils import CSVLogger, deep_merge, init_logging, load_config, set_seed
+from src.physics import Kinematics, Ogden, pako_residual_2D
+from src.utils import (
+    CSVLogger,
+    deep_merge,
+    init_logging,
+    load_config,
+    set_seed,
+    stencil_grad,
+    triangle_shape_gradients,
+)
 
 
-def compute_loss(*args) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+def compute_step_loss(
+    b: torch.Tensor,
+    rho: float,
+    alpha_rayleigh: float,
+    weights: dict,
+    u_pred: torch.Tensor,
+    u_t: torch.Tensor,
+    u_tt: torch.Tensor,
+    P: torch.Tensor,
+    ogden: Ogden,
+    mesh: Mesh,
+    dN_dX: torch.Tensor,
+    batch: MGNBatch,
+    F_ext: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+    lambda_data = weights["lambda_data"]
+    lambda_dirichlet = weights["lambda_dirichlet"]
+    lambda_neumann = weights["lambda_neumann"]
+    lambda_pako = weights["lambda_pako"]
 
-    # Weight Load
+    # Data loss
+    psi_pred = torch.sum(ogden.psi * mesh.elements_area)  # type: ignore
+    l_data = data_loss(u_pred, batch.u_exact, psi_pred, batch.psi_exact)
 
-    # Residual
-    u_pred = torch.zeros(1)
+    # Dirichlet loss
+    l_dirichlet = dirichlet_loss(
+        u_pred, mesh.fixed_dofs, u_fixed_gt=batch.u_fixed_exact
+    )
 
-    # Boundary conditions
+    # Neumann loss
+    P_right = P[mesh.right_elements]
+    n_normal = torch.tensor([1.0, 0.0], dtype=P.dtype, device=P.device)
+    l_neumann = neumann_loss(P_right, n_normal, batch.trac_ext)
 
-    # Total Loss
-    total_loss = torch.zeros(1)
+    # Pako loss
+    R = pako_residual_2D(P, mesh, dN_dX, b, rho, u_t, u_tt, alpha_rayleigh, F_ext)
+    l_pako = pako_loss(R, F_ext)
 
-    # Metrics Log
-    metrics = {"metric": 0.0}
+    l_physics = l_dirichlet + l_neumann + l_pako
 
-    return total_loss, u_pred, metrics  # Eventually add other returns
+    # Unweighted step loss sum
+    l_step = (
+        lambda_data * l_data
+        + lambda_dirichlet * l_dirichlet
+        + lambda_neumann * l_neumann
+        + lambda_pako * l_pako
+    )
+
+    metrics = {
+        "l_step": l_step.item(),
+        "l_data": l_data.item(),
+        "l_dirichlet": l_dirichlet.item(),
+        "l_neumann": l_neumann.item(),
+        "l_pako": l_pako.item(),
+    }
+
+    return l_step, l_physics, metrics
 
 
 def train(overrides: dict | None = None):
@@ -38,7 +90,6 @@ def train(overrides: dict | None = None):
     device = torch.device(cfg["training"]["device"])
     output_dir = Path(cfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    model_type = cfg["model"]["type"]
 
     model_name = cfg["model"]["model_name"]
     checkpoint_dir = Path(output_dir / "checkpoints" / model_name)
@@ -50,23 +101,18 @@ def train(overrides: dict | None = None):
         output_dir / f"metrics_{model_name}.csv",
         fieldnames=[
             "epoch",
-            # Loss terms
+            "step",
+            "l_step",
+            "l_data",
+            "l_dirichlet",
+            "l_neumann",
+            "l_pako",
+            "causal_w",
+            "eps",
         ],
     )
 
     method = cfg["training"]["method"]
-
-    # Data
-    data_dir = Path(cfg["data"]["data_dir"])
-    dataset_path = data_dir / cfg["data"]["dataset_name"]
-
-    if not dataset_path.exists():
-        dataset = generate_steady_state_dataset(cfg, device=device)
-    else:
-        dataset = torch.load(dataset_path, map_location=device, weights_only=False)
-    data_loader = MGNData(dataset)
-    time_grid = dataset["time"]
-    time_steps = len(dataset["time"])
 
     # Mesh
     x_min, x_max = cfg["domain"]["x_range"]
@@ -81,8 +127,25 @@ def train(overrides: dict | None = None):
         device=device,
     )
 
+    ## stenchil derivate
+    dN_dX, _ = triangle_shape_gradients(mesh.nodes, mesh.elements)
+
+    # Data
+    data_dir = Path(cfg["data"]["data_dir"])
+    dataset_path = data_dir / cfg["data"]["dataset_name"]
+
+    if not dataset_path.exists():
+        dataset = generate_inertial_dataset(cfg, device=device)
+    else:
+        dataset = torch.load(dataset_path, map_location=device, weights_only=False)
+    data_loader = MGNData(dataset, mesh)
+
+    # Time mesh
+    time_steps = len(dataset["time"])
+    dt = data_loader.dt
+
     # Model
-    mgn = MeshGraphNet().to(device)
+    mgn = MeshGraphNet().to(device=device, dtype=torch.float64)
 
     ## Add Ansatz check (optional)
 
@@ -94,33 +157,43 @@ def train(overrides: dict | None = None):
 
     # Physics Constants
     p_cfg = cfg["physics"]
-    alphas = torch.tensor(p_cfg["alphas"], device=device, dtype=torch.float32)
-    mus = torch.tensor(p_cfg["mus"], device=device, dtype=torch.float32)
-    lam = float(p_cfg["lam"])
-    beta = float(p_cfg["beta"])
-    b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float32)
+    tissue = p_cfg["tissue"]
+    alphas = torch.tensor(p_cfg["alphas"][tissue], device=device, dtype=torch.float64)
+    mus_list = [float(mu) for mu in p_cfg["mus"][tissue]]
+    mus = torch.tensor(mus_list, device=device, dtype=torch.float64)
+    lam = float(p_cfg["lam"])  # TO SEARCH
+    beta = float(p_cfg["beta"])  # TO SEARCH
+    b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float64)
     rho = float(p_cfg["rho_0"])
+
+    # TO PUT IN THE CONFIG
+    zeta = 0.03
+    w_max, w_min = 1.0, 0.01
+    alpha_rayleigh = 2.0 * zeta * (w_max + w_min)
 
     ## Define tissue model
     # To define in accordently with the loss function
-    data_loader.load_physics(mus, alphas, beta, lam)
+    # data_loader.load_physics(mus, alphas, beta, lam)
 
     # Training Parameters
+    ## Annealing
+    causal_cfg = cfg["training"]["causal_annealing"]
+    eps_init = float(causal_cfg["eps_init"])
+    eps_final = float(causal_cfg["eps_final"])
+
     ## Loss weights
     cfg_w = cfg["training"]["loss_weights"]
     loss_weights = {
         "lambda_data": float(cfg_w["lambda_data"]),
-        "lambda_haslach": float(cfg_w["lambda_haslach"]),
-        "lambda_momentum": float(cfg_w["lambda_momentum"]),
-        "lambda_initial": float(cfg_w["lambda_initial"]),
-        "lambda_bc_base": float(cfg_w["lambda_bc_base"]),
-        "lambda_bc_tip": float(cfg_w["lambda_bc_tip"]),
+        "lambda_dirichlet": float(cfg_w["lambda_dirichlet"]),
+        "lambda_neumann": float(cfg_w["lambda_neumann"]),
+        "lambda_pako": float(cfg_w["lambda_pako"]),
     }
 
-    epochs = int(cfg["training"]["adam_epochs"])
-    raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
+    epochs = int(cfg["training"]["epochs"])
 
     ## Mesh border index assuming a square/cube
+    raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
     raw_node_type[mesh.top_nodes] = 3
     raw_node_type[mesh.bottom_nodes] = 3
     raw_node_type[mesh.right_nodes] = 2
@@ -129,59 +202,119 @@ def train(overrides: dict | None = None):
     node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
 
     ## Ablation study section (optional)
-    use_trac = method in {"traction", "dynamic", "visco", "full"}
-    use_u_dot = method in {"dynamic", "full"}
-    use_E = method in {"visco", "full"}
-    use_S = method == "full"
+    use_trac = method in {"traction", "dynamic", "visco", "full"}  # noqa: F841
+    use_u_dot = method in {"dynamic", "full"}  # noqa: F841
+    use_E = method in {"visco", "full"}  # noqa: F841
+    use_S = method == "full"  # noqa: F841
 
     # Training Loop
     logger.info("Start Hybrid MSG training...")
 
-    for epoch in tqdm(range(1, epochs + 1), desc="Epoch: "):
+    for epoch in tqdm(range(1, epochs + 1), desc="Epochs"):
+        # Causal annealing
+        if epochs > 1:
+            eps = eps_init * ((eps_final / eps_init) ** ((epoch - 1) / (epochs - 1)))
+        else:
+            eps = eps_init
         # Initialisation
+        u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
+        u_prev2 = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
 
-        ## Rollout prediction terms
+        u_t = torch.zeros_like(u_prev)
+        u_tt = torch.zeros_like(u_prev)
+
+        world_pos = mesh.nodes.clone()
+
+        l_prev_physics = 0.0
+        total_epoch_loss = 0.0
+
+        optimizer.zero_grad()
 
         for t_step in range(time_steps):
-            optimizer.zero_grad()
             batch = data_loader.get_batch(t_step)
 
-            ## CREATE GRAPH MUST BE REWORKED
             graph = create_graph(
-                mesh=mesh,  # type: ignore
-                node_type=node_type,  # type: ignore
-                device=device,  # type: ignore
+                mesh=mesh,
+                world_pos=world_pos,
+                node_type=node_type,
+                device=device,
             )
-            # Add/return needed term accordantly to loss compute function
-            total_loss, u_pred, metrics = compute_loss()
 
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(mgn.parameters(), max_norm=1.0)
-            optimizer.step()
+            # Get the prediciton
+            u = mgn(graph)
+            u = u.to(dtype=torch.float64)
+
+            # Get dynamics
+            u_t = (u - u_prev) / dt
+            u_tt = (u - 2.0 * u_prev + u_prev2) / (dt**2)
+
+            F_ext = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
+            F_ext[mesh.right_nodes] = batch.trac_ext * mesh.right_lengths.unsqueeze(-1)
+
+            # Get kinematics
+            grad_u = stencil_grad(u, mesh.elements, dN_dX)
+            kin = Kinematics(grad_u)
+            ogden = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin)
+            ogden.get_2Dpsi()
+            S = ogden.get_S()
+            P = kin.compute_P(S)
+
+            # Loss compute
+            l_step, l_physics, metrics = compute_step_loss(
+                b=b,
+                rho=rho,
+                alpha_rayleigh=alpha_rayleigh,
+                weights=loss_weights,
+                u_pred=u,
+                u_t=u_t,
+                u_tt=u_tt,
+                P=P,
+                ogden=ogden,
+                mesh=mesh,
+                dN_dX=dN_dX,
+                batch=batch,
+                F_ext=F_ext,
+            )
+
+            # Annealing
+            causal_arg = -eps * min(l_prev_physics, 20.0)
+            causal_w = math.exp(causal_arg)
+
+            weighted_loss = causal_w * l_step
+            total_epoch_loss += weighted_loss.detach().item()
+
+            # Backpropagation
+            weighted_loss.backward()
 
             # Update rollout prediction terms
+            l_prev_physics += l_physics.detach().item() / (t_step + 1)
+            u_prev2 = u_prev.detach().clone()
+            u_prev = u.detach().clone()
+            world_pos = (mesh.nodes + u_prev).detach()
 
-            # Metrics
+            # Logging
             metrics["step"] = t_step
             metrics["epoch"] = epoch
+            metrics["causal_w"] = causal_w
+            metrics["eps"] = eps
             metrics_logger.log(metrics)
 
+        # Weight optimisation
+        torch.nn.utils.clip_grad_norm_(mgn.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        # Backup saving
         if epoch % 50 == 0:
             torch.save(
-                {
-                    "model_state_dict": mgn.state_dict(),
-                    "config": cfg,
-                },
+                {"model_state_dict": mgn.state_dict(), "config": cfg},
                 checkpoint_dir / f"{model_name}_{epoch}.pt",
             )
-
+    # Final Save
     torch.save(
-        {
-            "model_state_dict": mgn.state_dict(),
-            "config": cfg,
-        },
+        {"model_state_dict": mgn.state_dict(), "config": cfg},
         output_dir / f"{model_name}.pt",
     )
+    logger.info("Training Completed Successfully!")
 
     logger.info("-----------------------------Train Ended-----------------------------")
 

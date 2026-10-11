@@ -6,48 +6,49 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib import animation
+from matplotlib.animation import FFMpegWriter, PillowWriter
 
-from src.geometry import create_mesh, create_time_graph
-from src.loader import generate_steady_state_dataset
+from src.geometry import create_graph, create_mesh
+from src.loader import generate_inertial_dataset
 from src.models import MeshGraphNet
 from src.utils import init_logging, load_config
 
 
 def rollout_trajectory(
-    model: MeshGraphNet, mesh, time_grid: torch.Tensor, device: torch.device
+    model: MeshGraphNet,
+    mesh,
+    node_type: torch.Tensor,
+    time_steps: int,
+    device: torch.device,
 ) -> np.ndarray:
     model.eval()
-    num_nodes = mesh.n_nodes
-    time_steps = len(time_grid)
+    u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
+    world_pos = mesh.nodes.clone()
 
-    u_pred_trajectory = [
-        torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
-    ]
-    u_curr = torch.zeros((num_nodes, 2), device=device, dtype=torch.float32)
+    u_pred_trajectory = []
 
     with torch.no_grad():
-        for t_step in range(1, time_steps):
-            t = time_grid[t_step]
-            graph = create_time_graph(mesh=mesh, u=u_curr, t=t)
-            preds = model(graph)
-            u_raw = preds[:, :2]
+        for t_step in range(time_steps):
+            graph = create_graph(
+                mesh=mesh,
+                world_pos=world_pos,
+                node_type=node_type,
+                device=device,
+            )
+            u = model(graph).to(dtype=torch.float64)
+            u_pred_trajectory.append(u.cpu())
 
-            X_ref = graph.mesh_nodes
-            X_coord = X_ref[:, 0:1]
+            u_prev = u.detach().clone()
+            world_pos = (mesh.nodes + u_prev).detach()
 
-            u_next = X_coord * u_raw
-
-            u_pred_trajectory.append(u_next)
-            u_curr = u_next
-
-    return torch.stack(u_pred_trajectory, dim=0).cpu().numpy()
+    return torch.stack(u_pred_trajectory, dim=0).numpy()
 
 
 def animate_deformation(
     model_path: Path | None = None,
     output_filename: str = "mesh_deformation.mp4",
     fps: int = 20,
-):  
+):
     # Config and logging
     init_logging()
     cfg = load_config()
@@ -61,21 +62,7 @@ def animate_deformation(
     if not model_path.exists():
         raise FileNotFoundError(f"Missing model file: {model_path}")
 
-    # Dataset
-    data_dir = Path(cfg["data"]["data_dir"])
-    dataset_path = data_dir / cfg["data"]["dataset_name"]
-
-    if not dataset_path.exists():
-        print(f"Dataset not found at {dataset_path}. Generating now...")
-        dataset = generate_steady_state_dataset(cfg, device=device)
-    else:
-        dataset = torch.load(dataset_path, map_location=device, weights_only=False)
-
-    time_grid = dataset["time"]
-    u_exact_traj = dataset["u"].cpu().numpy()
-    F_ext_traj = dataset["F_ext"].cpu().numpy()
-
-    # Mesh
+    # Mesh creation
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
     nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
@@ -88,27 +75,55 @@ def animate_deformation(
         device=device,
     )
 
-    # Model
-    mgn = MeshGraphNet(
-        node_in_dim=int(cfg["model"]["node_in_dim"]),
-        edge_in_dim=int(cfg["model"]["edge_in_dim"]),
-        latent_dim=int(cfg["model"]["latent_dim"]),
-        hidden_dim=int(cfg["model"]["hidden_dim"]),
-        num_layers=int(cfg["model"]["num_layers"]),
-        output_dim=int(cfg["model"].get("output_dim", 5)),
-    ).to(device)
+    # Node type one-hot encoding
+    raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
+    raw_node_type[mesh.top_nodes] = 3
+    raw_node_type[mesh.bottom_nodes] = 3
+    raw_node_type[mesh.right_nodes] = 2
+    raw_node_type[mesh.left_nodes] = 1
+    node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
 
+    # Dataset loading
+    data_dir = Path(cfg["data"]["data_dir"])
+    dataset_path = data_dir / cfg["data"]["dataset_name"]
+
+    if not dataset_path.exists():
+        print(f"Dataset not found at {dataset_path}. Generating now...")
+        dataset = generate_inertial_dataset(cfg, device=device)
+    else:
+        dataset = torch.load(dataset_path, map_location=device, weights_only=False)
+
+    time_grid = dataset["time"].cpu().numpy()
+    u_exact_traj = dataset["u"].cpu().numpy()
+    num_frames = len(time_grid)
+
+    # External forces calculation matching animate_dataset.py
+    F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float64)
+
+    if "F_ext" in dataset:
+        F_ext_traj = dataset["F_ext"].cpu().numpy()
+    elif "trac_ext" in dataset:
+        trac_traj = dataset["trac_ext"].cpu().numpy()
+        right_nodes = mesh.right_nodes.cpu().numpy()
+        right_lengths = mesh.right_lengths.cpu().numpy()
+
+        if trac_traj.ndim == 3:
+            F_ext_traj[:, right_nodes, :] = trac_traj * right_lengths[None, :, None]
+        elif trac_traj.ndim == 2:
+            F_ext_traj[:, right_nodes, :] = trac_traj[:, None, :] * right_lengths[None, :, None]
+
+    # Model instantiation and weight loading
+    mgn = MeshGraphNet().to(device=device, dtype=torch.float64)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     mgn.load_state_dict(state_dict)
 
-    # Rollout
-    u_pred_traj = rollout_trajectory(mgn, mesh, time_grid, device)
+    # Rollout predicted trajectory
+    u_pred_traj = rollout_trajectory(mgn, mesh, node_type, num_frames, device)
 
-    # Geometry and margin
+    # Geometry bounds & plot setup
     nodes_ref = mesh.nodes.cpu().numpy()
     elements = mesh.elements.cpu().numpy()
-    num_frames = len(time_grid)
 
     all_x = np.concatenate(
         [nodes_ref[:, 0] + u_exact_traj[..., 0], nodes_ref[:, 0] + u_pred_traj[..., 0]]
@@ -139,17 +154,13 @@ def animate_deformation(
     )
 
     def update(frame: int):
-        t_val = (
-            time_grid[frame].item()
-            if isinstance(time_grid[frame], torch.Tensor)
-            else float(time_grid[frame])
-        )
+        t_val = float(time_grid[frame])
 
         f_current = F_ext_traj[frame]
         f_norm = np.linalg.norm(f_current, axis=-1)
         active_nodes = f_norm > 1e-8
 
-        # Update ground truth
+        # Ground truth plot
         pos_gt = nodes_ref + u_exact_traj[frame]
         ax_gt.clear()
         ax_gt.set_title(f"Ground Truth (t = {t_val:.3f} s)")
@@ -192,7 +203,7 @@ def animate_deformation(
         ax_gt.set_xlabel("X [m]")
         ax_gt.set_ylabel("Y [m]")
 
-        # Update prediction
+        # Prediction plot
         pos_pred = nodes_ref + u_pred_traj[frame]
         ax_pred.clear()
         ax_pred.set_title(f"MeshGraphNet PINN (t = {t_val:.3f} s)")
@@ -240,9 +251,16 @@ def animate_deformation(
         fig, update, frames=num_frames, interval=1000 // fps, blit=False
     )
 
-    save_target = output_dir / output_filename
-    anim.save(save_target, writer="ffmpeg", fps=fps)
+    # Writer selection & execution
+    if FFMpegWriter.isAvailable():
+        writer = FFMpegWriter(fps=fps)
+        save_target = output_dir / output_filename
+    else:
+        print("FFmpeg not found on system. Falling back to PillowWriter (.gif output)...")
+        writer = PillowWriter(fps=fps)
+        save_target = output_dir / f"{Path(output_filename).stem}.gif"
 
+    anim.save(save_target, writer=writer)
     plt.close()
     print(f"Animation successfully exported to: {save_target}")
 

@@ -1,11 +1,8 @@
-from .log_setup import deep_merge, init_logging, load_config
+from .log_setup import deep_merge, init_logging, load_config  # noqa: N999
 from .metrics_logger import CSVLogger
 from .reproducibility import set_seed
 from .tensor_tools import (
     check_tensor,
-    d_dt,
-    div,
-    grad,
     stencil_grad,
     triangle_shape_gradients,
     voigt_tensor,
@@ -15,10 +12,7 @@ from .tensor_tools import (
 __all__ = [
     "CSVLogger",
     "check_tensor",
-    "d_dt",
     "deep_merge",
-    "div",
-    "grad",
     "init_logging",
     "load_config",
     "set_seed",
