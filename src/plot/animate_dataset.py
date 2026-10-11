@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib import animation
+from matplotlib.animation import FFMpegWriter, PillowWriter
 
 from src.geometry import create_mesh
 from src.loader import generate_inertial_dataset
@@ -56,14 +57,16 @@ def animate_ground_truth(
     if "F_ext" in dataset:
         F_ext_traj = dataset["F_ext"].cpu().numpy()
     elif "trac_ext" in dataset:
-        trac_traj = dataset["trac_ext"].cpu().numpy()  
+        trac_traj = dataset["trac_ext"].cpu().numpy()
         right_nodes = mesh.right_nodes.cpu().numpy()
         right_lengths = mesh.right_lengths.cpu().numpy()
 
         if trac_traj.ndim == 3:
             F_ext_traj[:, right_nodes, :] = trac_traj * right_lengths[None, :, None]
         elif trac_traj.ndim == 2:
-            F_ext_traj[:, right_nodes, :] = trac_traj[:, None, :] * right_lengths[None, :, None]
+            F_ext_traj[:, right_nodes, :] = (
+                trac_traj[:, None, :] * right_lengths[None, :, None]
+            )
 
     # Calculate bounding box & color limits
     mag_exact = np.linalg.norm(u_exact_traj, axis=-1)
@@ -81,7 +84,8 @@ def animate_ground_truth(
     fig, ax = plt.subplots(figsize=(8, 6))
 
     sm = plt.cm.ScalarMappable(
-        cmap="viridis", norm=plt.Normalize(vmin=0.0, vmax=vmax) # type: ignore
+        cmap="viridis",
+        norm=plt.Normalize(vmin=0.0, vmax=vmax),  # type: ignore
     )
     fig.colorbar(
         sm,
@@ -109,7 +113,7 @@ def animate_ground_truth(
             vmin=0.0,
             vmax=vmax,
             shading="gouraud",
-        ) # type: ignore
+        )  # type: ignore
 
         # Mesh wireframe plot
         ax.triplot(
@@ -153,9 +157,20 @@ def animate_ground_truth(
     )
 
     save_target = output_dir / output_filename
-    anim.save(save_target, writer="ffmpeg", fps=fps)
+
+    if FFMpegWriter.isAvailable():
+        writer = FFMpegWriter(fps=fps)
+        save_target = output_dir / output_filename
+    else:
+        print(
+            "FFmpeg not found on system. Falling back to PillowWriter (.gif output)..."
+        )
+        writer = PillowWriter(fps=fps)
+        save_target = output_dir / f"{Path(output_filename).stem}.gif"
+
+    anim.save(save_target, writer=writer)
     plt.close()
-    print(f"Dataset verification animation saved to: {save_target}")
+    print(f"Animation successfully exported to: {save_target}")
 
 
 if __name__ == "__main__":

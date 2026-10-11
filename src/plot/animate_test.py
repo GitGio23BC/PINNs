@@ -28,7 +28,7 @@ def rollout_trajectory(
     u_pred_trajectory = []
 
     with torch.no_grad():
-        for t_step in range(time_steps):
+        for _ in range(time_steps):
             graph = create_graph(
                 mesh=mesh,
                 world_pos=world_pos,
@@ -62,7 +62,7 @@ def animate_deformation(
     if not model_path.exists():
         raise FileNotFoundError(f"Missing model file: {model_path}")
 
-    # Mesh creation
+    # Mesh
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
     nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
@@ -75,7 +75,6 @@ def animate_deformation(
         device=device,
     )
 
-    # Node type one-hot encoding
     raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
     raw_node_type[mesh.top_nodes] = 3
     raw_node_type[mesh.bottom_nodes] = 3
@@ -83,7 +82,7 @@ def animate_deformation(
     raw_node_type[mesh.left_nodes] = 1
     node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
 
-    # Dataset loading
+    # Data
     data_dir = Path(cfg["data"]["data_dir"])
     dataset_path = data_dir / cfg["data"]["dataset_name"]
 
@@ -97,22 +96,20 @@ def animate_deformation(
     u_exact_traj = dataset["u"].cpu().numpy()
     num_frames = len(time_grid)
 
-    # External forces calculation matching animate_dataset.py
     F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float64)
 
-    if "F_ext" in dataset:
-        F_ext_traj = dataset["F_ext"].cpu().numpy()
-    elif "trac_ext" in dataset:
-        trac_traj = dataset["trac_ext"].cpu().numpy()
-        right_nodes = mesh.right_nodes.cpu().numpy()
-        right_lengths = mesh.right_lengths.cpu().numpy()
+    trac_traj = dataset["trac_ext"].cpu().numpy()
+    right_nodes = mesh.right_nodes.cpu().numpy()
+    right_lengths = mesh.right_lengths.cpu().numpy()
 
-        if trac_traj.ndim == 3:
-            F_ext_traj[:, right_nodes, :] = trac_traj * right_lengths[None, :, None]
-        elif trac_traj.ndim == 2:
-            F_ext_traj[:, right_nodes, :] = trac_traj[:, None, :] * right_lengths[None, :, None]
+    if trac_traj.ndim == 3:
+        F_ext_traj[:, right_nodes, :] = trac_traj * right_lengths[None, :, None]
+    elif trac_traj.ndim == 2:
+        F_ext_traj[:, right_nodes, :] = (
+            trac_traj[:, None, :] * right_lengths[None, :, None]
+        )
 
-    # Model instantiation and weight loading
+    # Model 
     mgn = MeshGraphNet().to(device=device, dtype=torch.float64)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
@@ -143,7 +140,7 @@ def animate_deformation(
 
     fig, (ax_gt, ax_pred) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 
-    sm = plt.cm.ScalarMappable(cmap="viridis", norm=plt.Normalize(vmin=0.0, vmax=vmax)) # type: ignore
+    sm = plt.cm.ScalarMappable(cmap="viridis", norm=plt.Normalize(vmin=0.0, vmax=vmax))  # type: ignore
     fig.colorbar(
         sm,
         ax=[ax_gt, ax_pred],
@@ -256,7 +253,9 @@ def animate_deformation(
         writer = FFMpegWriter(fps=fps)
         save_target = output_dir / output_filename
     else:
-        print("FFmpeg not found on system. Falling back to PillowWriter (.gif output)...")
+        print(
+            "FFmpeg not found on system. Falling back to PillowWriter (.gif output)..."
+        )
         writer = PillowWriter(fps=fps)
         save_target = output_dir / f"{Path(output_filename).stem}.gif"
 

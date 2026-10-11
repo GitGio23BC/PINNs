@@ -38,17 +38,17 @@ model:
 training:
   method: "base"
   device: "cpu"
-  epochs: 100
+  epochs: 1000
   
   causal_annealing:
-    eps_init: 10.0
-    eps_final: 1000.0
+    eps_init: 1e-4
+    eps_final: 10.0
 
   loss_weights:
     lambda_data: 1.0
     lambda_dirichlet: 10.0
     lambda_neumann: 100.0
-    lambda_pako: 1.0
+    lambda_pako: 10.0
 
 # ==========================================
 # OPTIMIZER

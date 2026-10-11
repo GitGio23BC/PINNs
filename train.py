@@ -192,7 +192,6 @@ def train(overrides: dict | None = None):
 
     epochs = int(cfg["training"]["epochs"])
 
-    ## Mesh border index assuming a square/cube
     raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
     raw_node_type[mesh.top_nodes] = 3
     raw_node_type[mesh.bottom_nodes] = 3
@@ -213,8 +212,20 @@ def train(overrides: dict | None = None):
     for epoch in tqdm(range(1, epochs + 1), desc="Epochs"):
         # Causal annealing
         if epochs > 1:
+            loss_weights = {
+                    "lambda_data": float(cfg_w["lambda_data"]),
+                    "lambda_dirichlet": float(cfg_w["lambda_dirichlet"]),
+                    "lambda_neumann": float(cfg_w["lambda_neumann"]),
+                    "lambda_pako": float(cfg_w["lambda_pako"]),
+                }
             eps = eps_init * ((eps_final / eps_init) ** ((epoch - 1) / (epochs - 1)))
         else:
+            loss_weights = {
+                    "lambda_data": 1,
+                    "lambda_dirichlet": 0,
+                    "lambda_neumann": 0,
+                    "lambda_pako": 0,
+                }
             eps = eps_init
         # Initialisation
         u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)

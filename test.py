@@ -45,10 +45,8 @@ def test(model_path: Path | None = None):
         device=device,
     )
 
-    # Triangle shape gradients
     dN_dX, _ = triangle_shape_gradients(mesh.nodes, mesh.elements)
 
-    # Node type one-hot encoding
     raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
     raw_node_type[mesh.top_nodes] = 3
     raw_node_type[mesh.bottom_nodes] = 3
@@ -70,7 +68,7 @@ def test(model_path: Path | None = None):
     dt = data_loader.dt
     time_grid = dataset["time"]
 
-    # Model initialization & weight loading
+    # Model
     mgn = MeshGraphNet().to(device=device, dtype=torch.float64)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
@@ -118,9 +116,7 @@ def test(model_path: Path | None = None):
             device=device,
         )
 
-        # Enable autograd specifically for physics derivative evaluation
         with torch.enable_grad():
-            # --- Prediction ---
             u = mgn(graph).to(dtype=torch.float64)
             u.requires_grad_(True)
 
@@ -128,7 +124,9 @@ def test(model_path: Path | None = None):
             u_tt = (u - 2.0 * u_prev + u_prev2) / (dt**2)
             F_ext = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
             if batch.trac_ext is not None:
-                F_ext[mesh.right_nodes] = batch.trac_ext * mesh.right_lengths.unsqueeze(-1)
+                F_ext[mesh.right_nodes] = batch.trac_ext * mesh.right_lengths.unsqueeze(
+                    -1
+                )
 
             # Kinematics & Stress (Prediction)
             grad_u = stencil_grad(u, mesh.elements, dN_dX)
@@ -141,16 +139,17 @@ def test(model_path: Path | None = None):
             # Momentum Residual
             R_pako = pako_residual_2D(P, mesh, dN_dX, b, rho, u_tt, F_ext)
 
-            # --- Ground Truth Kinematics & Stress ---
+            # Kinematics & Stress (Refernce)
             u_exact = batch.u_exact.to(device=device).to(torch.float64).detach().clone()
             u_exact.requires_grad_(True)
             grad_u_exact = stencil_grad(u_exact, mesh.elements, dN_dX)
             kin_exact = Kinematics(grad_u_exact)
-            ogden_exact = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin_exact)
+            ogden_exact = Ogden(
+                mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin_exact
+            )
             ogden_exact.get_2Dpsi()
             S_exact = ogden_exact.get_S()
 
-        # Extract right-boundary mean E11 & S11
         e11_pred = kin.E[right_elems, 0, 0].mean().item()
         s11_pred = S[right_elems, 0, 0].mean().item()
         e11_gt = kin_exact.E[right_elems, 0, 0].mean().item()
@@ -161,7 +160,6 @@ def test(model_path: Path | None = None):
         E11_gt_traj.append(e11_gt)
         S11_gt_traj.append(s11_gt)
 
-        # Detach tensors from computation graph to avoid memory leaks
         all_u_pred.append(u.detach().cpu())
         all_S_pred.append(S.detach().cpu())
         all_pako_res.append(R_pako.detach().cpu())
@@ -285,7 +283,11 @@ def test(model_path: Path | None = None):
 
     # Subplot 6: Relative L2 Error over Time
     axes[1, 2].plot(
-        t_plot, l2_err_traj, "g-", linewidth=1.8, label=r"Relative $L_2$ Displacement Error"
+        t_plot,
+        l2_err_traj,
+        "g-",
+        linewidth=1.8,
+        label=r"Relative $L_2$ Displacement Error",
     )
     axes[1, 2].set_title("Displacement Error Trajectory")
     axes[1, 2].set_xlabel("Time $t$ [s]")
