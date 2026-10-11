@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from scipy.spatial import Delaunay
+import matplotlib.pyplot as plt
 import torch
 import numpy as np
 
@@ -40,6 +41,10 @@ class Mesh:
     back_nodes: torch.Tensor
     fixed_dofs: torch.Tensor
     free_dofs: torch.Tensor
+
+    width: float = 0.0
+    height: float = 0.0
+    depth: float = 0.0
 
     @property
     def n_nodes(self) -> int:
@@ -160,10 +165,10 @@ def create_mesh(
     )
 
 def create_mesh_3D(
-    width: float = 10.0,
+    width: float = 20.0,
     height: float = 10.0,
     depth: float = 10.0,
-    nx: int = 10,
+    nx: int = 20,
     ny: int = 10,
     nz: int = 10,
     device: torch.device | str = "cpu",
@@ -263,5 +268,98 @@ def create_mesh_3D(
         front_nodes=front_nodes,
         back_nodes=back_nodes,
         fixed_dofs=fixed_dofs,
-        free_dofs=free_dofs
+        free_dofs=free_dofs,
+        width=width,
+        height=height,
+        depth=depth
     )
+
+def test_mesh_3D():
+    """ 
+    Esegue un test di generazione della mesh 3D e plotta 
+    il risultato evidenziando il grafo completo e le facce.
+    """
+    print("Generazione della mesh 3D in corso...")
+    # Creiamo una mesh a bassa risoluzione (3x3x3) per una visualizzazione chiara
+    mesh = create_mesh_3D( 
+        device="cpu"
+    )
+    
+    print(f"Nodi totali: {mesh.n_nodes}")
+    print(f"Elementi (Tetraedri): {mesh.n_elements}")
+    print(f"Edge totali: {mesh.n_edges}")
+    print(f"Gradi di libertà (DOF): {mesh.n_dofs}")
+
+    # Estraiamo i dati portandoli su CPU in formato NumPy per Matplotlib
+    nodes = mesh.nodes.cpu().numpy()
+    edges = mesh.edges.cpu().numpy()
+
+    fig = plt.figure(figsize=(16, 12))
+    fig.suptitle("PIGNN - Test Inizializzazione Mesh 3D", fontsize=16)
+
+    # ==========================================
+    # 1. Plot: Modello 3D Completo (Nodi ed Edge)
+    # ==========================================
+    ax1 = fig.add_subplot(221, projection='3d')
+    ax1.set_title("Modello 3D Completo (World Edges statici)")
+    
+    # Plottiamo gli edge
+    for edge in edges:
+        n1, n2 = edge
+        ax1.plot3D(
+            [nodes[n1, 0], nodes[n2, 0]],
+            [nodes[n1, 1], nodes[n2, 1]],
+            [nodes[n1, 2], nodes[n2, 2]],
+            color='gray', alpha=0.4, linewidth=0.5
+        )
+    # Plottiamo tutti i nodi
+    ax1.scatter(nodes[:, 0], nodes[:, 1], nodes[:, 2], c='black', s=10)
+    ax1.set_xlabel('X')
+    ax1.set_ylabel('Y')
+    ax1.set_zlabel('Z')
+    ax1.set_box_aspect((mesh.width, mesh.height, mesh.depth)) # (width, height, depth)
+    # Funzione di supporto per plottare le facce opposte
+    def plot_faces(ax, mask1, mask2, color1, color2, label1, label2):
+        # Disegna tutti i nodi in trasparenza come riferimento
+        ax.scatter(nodes[:, 0], nodes[:, 1], nodes[:, 2], c='lightgray', s=10, alpha=0.1)
+        
+        # Disegna la faccia 1
+        idx1 = mask1.cpu().numpy()
+        ax.scatter(nodes[idx1, 0], nodes[idx1, 1], nodes[idx1, 2], c=color1, s=40, label=label1, depthshade=False)
+        
+        # Disegna la faccia 2
+        idx2 = mask2.cpu().numpy()
+        ax.scatter(nodes[idx2, 0], nodes[idx2, 1], nodes[idx2, 2], c=color2, s=40, label=label2, depthshade=False)
+        
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.legend()
+
+    # ==========================================
+    # 2. Plot: Facce asse X (Left e Right)
+    # ==========================================
+    ax2 = fig.add_subplot(222, projection='3d')
+    ax2.set_title("Asse X: Facce Left (Ancoraggio) & Right (Libera)")
+    plot_faces(ax2, mesh.left_nodes, mesh.right_nodes, 'red', 'blue', 'Left Nodes (Fissi)', 'Right Nodes')
+
+    # ==========================================
+    # 3. Plot: Facce asse Y (Bottom e Top)
+    # ==========================================
+    ax3 = fig.add_subplot(223, projection='3d')
+    ax3.set_title("Asse Y: Facce Bottom & Top")
+    plot_faces(ax3, mesh.bottom_nodes, mesh.top_nodes, 'green', 'orange', 'Bottom Nodes', 'Top Nodes')
+
+    # ==========================================
+    # 4. Plot: Facce asse Z (Front e Back)
+    # ==========================================
+    ax4 = fig.add_subplot(224, projection='3d')
+    ax4.set_title("Asse Z: Facce Front & Back")
+    plot_faces(ax4, mesh.front_nodes, mesh.back_nodes, 'purple', 'cyan', 'Front Nodes', 'Back Nodes')
+
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    # Assicurati di aver importato matplotlib.pyplot e mpl_toolkits.mplot3d in alto nel file
+    test_mesh_3D()
