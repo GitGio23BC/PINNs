@@ -52,7 +52,7 @@ def animate_ground_truth(
     elements = mesh.elements.cpu().numpy()
     num_frames = len(time_grid)
 
-    F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float64)
+    F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float32)
 
     if "F_ext" in dataset:
         F_ext_traj = dataset["F_ext"].cpu().numpy()

@@ -83,6 +83,7 @@ def create_mesh(
     nx: int = 10,
     ny: int = 10,
     device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float32,
 ):
     """
     Create a regular 2D triangular mesh.
@@ -106,8 +107,8 @@ def create_mesh(
     Mesh
         Generated triangular mesh.
     """
-    x = torch.linspace(0.0, width, nx + 1, device=device, dtype=torch.float64)
-    y = torch.linspace(0.0, height, ny + 1, device=device, dtype=torch.float64)
+    x = torch.linspace(0.0, width, nx + 1, device=device, dtype=dtype)
+    y = torch.linspace(0.0, height, ny + 1, device=device, dtype=dtype)
 
     Y, X = torch.meshgrid(y, x, indexing="ij")
     nodes = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)

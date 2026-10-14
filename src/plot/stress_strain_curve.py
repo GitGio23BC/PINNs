@@ -30,7 +30,7 @@ def stress_strain_curve(
     time_mask = t <= (T_final / 2.0)
 
     # Get the gradient
-    grad_u = dataset["grad_u"].to(device).to(torch.float64).detach().clone()
+    grad_u = dataset["grad_u"].to(device).to(torch.float32).detach().clone()
     grad_u.requires_grad_(True)
 
     # Green-Lagrange computation
@@ -41,10 +41,10 @@ def stress_strain_curve(
     p_cfg = cfg["physics"]
     tissue = p_cfg["tissue"]
     alphas = torch.tensor(
-        p_cfg["alphas"][tissue], device=device, dtype=torch.float64
+        p_cfg["alphas"][tissue], device=device, dtype=torch.float32
     )
     mus_list = [float(mu) for mu in p_cfg["mus"][tissue]]
-    mus = torch.tensor(mus_list, device=device, dtype=torch.float64)
+    mus = torch.tensor(mus_list, device=device, dtype=torch.float32)
     lam = float(p_cfg["lam"])
     beta = float(p_cfg["beta"])
 

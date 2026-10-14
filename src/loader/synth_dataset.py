@@ -35,12 +35,16 @@ def compute_external_force(
     mesh: Mesh,
     sigma_max: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    F_ext = torch.zeros(mesh.n_dofs, dtype=torch.float64, device=mesh.nodes.device)
+    dtype = mesh.nodes.dtype
+    device = mesh.nodes.device
+    F_ext = torch.zeros(mesh.n_dofs, dtype=dtype, device=device)
 
     # Magnitude (N/m)
-    trac_ext = sigma_max * torch.sin(torch.pi * t_n / T)
-    trac_vec = torch.tensor(
-        [trac_ext, 0.0], dtype=torch.float64, device=mesh.nodes.device
+    trac_ext = sigma_max * torch.sin(
+        torch.pi * t_n.to(device=device, dtype=dtype) / T
+    )
+    trac_vec = torch.stack(
+        (trac_ext, torch.zeros((), dtype=dtype, device=device))
     )
 
     right_dofs_x = 2 * mesh.right_nodes
@@ -283,6 +287,7 @@ def generate_inertial_dataset(
         nx=nx,
         ny=ny,
         device=device,
+        dtype=torch.float64,
     )
     # Temporal Grid
     t0, t_final = cfg["domain"]["t_range"]
@@ -518,6 +523,11 @@ def generate_inertial_dataset(
         grad_u_traj[n] = stencil_grad(u.view(-1, 2), mesh.elements, dN_dX)
         trac_traj[n] = trac_ext.unsqueeze(0).expand(len(mesh.right_nodes), 2)
 
+    u_t_traj_n = (u_t_traj - u_t_traj.min())/(u_t_traj.max() - u_t_traj.min())
+    u_tt_traj_n = (u_tt_traj - u_tt_traj.min())/(u_tt_traj.max() - u_tt_traj.min())
+    psi_traj_n = (psi_traj - psi_traj.min())/(psi_traj.max() - psi_traj.min())
+    trac_traj_n = (trac_traj - trac_traj.min())/(trac_traj.max() - trac_traj.min())
+    
     dataset = {
         "time": t_eval.float().to(device),
         "nodes": mesh.nodes.to(device),
@@ -531,14 +541,20 @@ def generate_inertial_dataset(
         "top_nodes": mesh.top_nodes.to(device),
         "grad_u": grad_u_traj.to(device),
         ###
-        "u_t": u_t_traj.to(device),
-        "u_tt": u_tt_traj.to(device),
+        "u_t_complete": u_t_traj.to(device),
+        "u_t": u_t_traj_n.to(device),
+        "u_tt_complete": u_tt_traj.to(device),
+        "u_tt": u_tt_traj_n.to(device),
         ###
+        "u_fixed_complete": u_fixed.to(device),
         "u_fixed": u_fixed.to(device),
         ###
-        "u": u_traj.to(device),
-        "psi": psi_traj.to(device),
-        "trac_ext": trac_traj.to(device),
+        "u_complete": u_traj.to(device),
+        "u": (u_traj - u_traj.min())/(u_traj.max() - u_traj.min()),
+        "psi_complete": psi_traj.to(device),
+        "psi": psi_traj_n.to(device),
+        "trac_ext_complete": trac_traj.to(device),
+        "trac_ext": trac_traj_n.to(device),
     }
     torch.save(dataset, save_file)
     return dataset

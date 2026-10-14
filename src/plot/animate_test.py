@@ -22,7 +22,7 @@ def rollout_trajectory(
     device: torch.device,
 ) -> np.ndarray:
     model.eval()
-    u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
+    u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float32, device=device)
     world_pos = mesh.nodes.clone()
 
     u_pred_trajectory = []
@@ -35,7 +35,7 @@ def rollout_trajectory(
                 node_type=node_type,
                 device=device,
             )
-            u = model(graph).to(dtype=torch.float64)
+            u = model(graph).to(dtype=torch.float32)
             u_pred_trajectory.append(u.cpu())
 
             u_prev = u.detach().clone()
@@ -96,7 +96,7 @@ def animate_deformation(
     u_exact_traj = dataset["u"].cpu().numpy()
     num_frames = len(time_grid)
 
-    F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float64)
+    F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float32)
 
     trac_traj = dataset["trac_ext"].cpu().numpy()
     right_nodes = mesh.right_nodes.cpu().numpy()
@@ -110,7 +110,7 @@ def animate_deformation(
         )
 
     # Model 
-    mgn = MeshGraphNet().to(device=device, dtype=torch.float64)
+    mgn = MeshGraphNet().to(device=device, dtype=torch.float32)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     mgn.load_state_dict(state_dict)

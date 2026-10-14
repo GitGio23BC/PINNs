@@ -7,14 +7,14 @@ def check_tensor(
     x: float | torch.Tensor, N: int, device: torch.device | str
 ) -> torch.Tensor:
     if isinstance(x, (float, int)):
-        return torch.full((N, 1), float(x), device=device, dtype=torch.float64)
+        return torch.full((N, 1), float(x), device=device, dtype=torch.float32)
 
     if isinstance(x, torch.Tensor):
         if x.dim() == 0 or (x.dim() == 1 and x.numel() == 1):
-            return x.expand(N, 1).to(device=device, dtype=torch.float64)
+            return x.expand(N, 1).to(device=device, dtype=torch.float32)
         if x.dim() == 1 and x.shape[0] == N:
-            return x.unsqueeze(-1).to(device=device, dtype=torch.float64)
-        return x.to(device=device, dtype=torch.float64)
+            return x.unsqueeze(-1).to(device=device, dtype=torch.float32)
+        return x.to(device=device, dtype=torch.float32)
 
     raise TypeError(f"Unsupported input type for tensor conversion: {type(x)}")
 

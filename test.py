@@ -69,7 +69,8 @@ def test(model_path: Path | None = None):
     time_grid = dataset["time"]
 
     # Model
-    mgn = MeshGraphNet().to(device=device, dtype=torch.float64)
+    dtype = torch.float32
+    mgn = MeshGraphNet().to(device=device, dtype=dtype)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     mgn.load_state_dict(state_dict)
@@ -79,17 +80,17 @@ def test(model_path: Path | None = None):
     # Physics Constants
     p_cfg = cfg["physics"]
     tissue = p_cfg["tissue"]
-    alphas = torch.tensor(p_cfg["alphas"][tissue], device=device, dtype=torch.float64)
+    alphas = torch.tensor(p_cfg["alphas"][tissue], device=device, dtype=dtype)
     mus_list = [float(mu) for mu in p_cfg["mus"][tissue]]
-    mus = torch.tensor(mus_list, device=device, dtype=torch.float64)
+    mus = torch.tensor(mus_list, device=device, dtype=dtype)
     lam = float(p_cfg["lam"])
     beta = float(p_cfg["beta"])
-    b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float64)
+    b = torch.tensor(p_cfg["body_force"], device=device, dtype=dtype)
     rho = float(p_cfg["rho_0"])
 
     # Rollout Initialisation
-    u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
-    u_prev2 = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
+    u_prev = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
+    u_prev2 = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
     world_pos = mesh.nodes.clone()
 
     all_u_pred = []
@@ -117,12 +118,12 @@ def test(model_path: Path | None = None):
         )
 
         with torch.enable_grad():
-            u = mgn(graph).to(dtype=torch.float64)
+            u = mgn(graph).to(dtype=dtype)
             u.requires_grad_(True)
 
             # Acceleration & External Force
             u_tt = (u - 2.0 * u_prev + u_prev2) / (dt**2)
-            F_ext = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
+            F_ext = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
             if batch.trac_ext is not None:
                 F_ext[mesh.right_nodes] = batch.trac_ext * mesh.right_lengths.unsqueeze(
                     -1
@@ -140,7 +141,7 @@ def test(model_path: Path | None = None):
             R_pako = pako_residual_2D(P, mesh, dN_dX, b, rho, u_tt, F_ext)
 
             # Kinematics & Stress (Refernce)
-            u_exact = batch.u_exact.to(device=device).to(torch.float64).detach().clone()
+            u_exact = batch.u_exact.to(device=device).to(dtype).detach().clone()
             u_exact.requires_grad_(True)
             grad_u_exact = stencil_grad(u_exact, mesh.elements, dN_dX)
             kin_exact = Kinematics(grad_u_exact)

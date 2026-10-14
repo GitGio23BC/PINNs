@@ -87,7 +87,19 @@ def train(overrides: dict | None = None):
     cfg = deep_merge(cfg, overrides)
     set_seed(int(cfg.get("seed", 42)))
 
-    device = torch.device(cfg["training"]["device"])
+    requested_device = cfg["training"].get("device", "cuda")
+    if requested_device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            "È stata richiesta una GPU CUDA, ma PyTorch non la rileva."
+        )
+
+    device = torch.device(requested_device)
+    logger = logging.getLogger(__name__)
+    logger.info("Training device: %s", device)
+
+    if device.type == "cuda":
+        logger.info("GPU: %s", torch.cuda.get_device_name(device))
+
     output_dir = Path(cfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -113,6 +125,7 @@ def train(overrides: dict | None = None):
     )
 
     method = cfg["training"]["method"]
+    dtype = torch.float32
 
     # Mesh
     x_min, x_max = cfg["domain"]["x_range"]
@@ -125,6 +138,7 @@ def train(overrides: dict | None = None):
         nx=nx,
         ny=ny,
         device=device,
+        dtype=dtype,
     )
 
     ## stenchil derivate
@@ -137,7 +151,21 @@ def train(overrides: dict | None = None):
     if not dataset_path.exists():
         dataset = generate_inertial_dataset(cfg, device=device)
     else:
-        dataset = torch.load(dataset_path, map_location=device, weights_only=False)
+        dataset = torch.load(
+            dataset_path,
+            map_location=device,
+            weights_only=False,
+        )
+
+    dataset = {
+        key: value.to(device=device, dtype=dtype)
+        if isinstance(value, torch.Tensor) and value.is_floating_point()
+        else value.to(device=device)
+        if isinstance(value, torch.Tensor)
+        else value
+        for key, value in dataset.items()
+    }
+
     data_loader = MGNData(dataset, mesh)
 
     # Time mesh
@@ -145,7 +173,14 @@ def train(overrides: dict | None = None):
     dt = data_loader.dt
 
     # Model
-    mgn = MeshGraphNet().to(device=device, dtype=torch.float64)
+    model_cfg = cfg["model"]
+    mgn = MeshGraphNet(
+        node_in_dim=int(model_cfg["node_in_dim"]),
+        edge_in_dim=int(model_cfg["edge_in_dim"]),
+        latent_dim=int(model_cfg["latent_dim"]),
+        hidden_dim=int(model_cfg["hidden_dim"]),
+        output_dim=int(model_cfg["output_dim"]),
+    ).to(device=device, dtype=dtype)
 
     ## Add Ansatz check (optional)
 
@@ -158,12 +193,12 @@ def train(overrides: dict | None = None):
     # Physics Constants
     p_cfg = cfg["physics"]
     tissue = p_cfg["tissue"]
-    alphas = torch.tensor(p_cfg["alphas"][tissue], device=device, dtype=torch.float64)
+    alphas = torch.tensor(p_cfg["alphas"][tissue], device=device, dtype=dtype)
     mus_list = [float(mu) for mu in p_cfg["mus"][tissue]]
-    mus = torch.tensor(mus_list, device=device, dtype=torch.float64)
+    mus = torch.tensor(mus_list, device=device, dtype=dtype)
     lam = float(p_cfg["lam"])  # TO SEARCH
     beta = float(p_cfg["beta"])  # TO SEARCH
-    b = torch.tensor(p_cfg["body_force"], device=device, dtype=torch.float64)
+    b = torch.tensor(p_cfg["body_force"], device=device, dtype=dtype)
     rho = float(p_cfg["rho_0"])
 
     # TO PUT IN THE CONFIG
@@ -205,7 +240,7 @@ def train(overrides: dict | None = None):
     use_u_dot = method in {"dynamic", "full"}  # noqa: F841
     use_E = method in {"visco", "full"}  # noqa: F841
     use_S = method == "full"  # noqa: F841
-
+    use_P = method == "full"  # noqa: F841
     # Training Loop
     logger.info("Start Hybrid MSG training...")
 
@@ -228,8 +263,8 @@ def train(overrides: dict | None = None):
                 }
             eps = eps_init
         # Initialisation
-        u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
-        u_prev2 = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
+        u_prev = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
+        u_prev2 = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
 
         u_t = torch.zeros_like(u_prev)
         u_tt = torch.zeros_like(u_prev)
@@ -253,13 +288,14 @@ def train(overrides: dict | None = None):
 
             # Get the prediciton
             u = mgn(graph)
-            u = u.to(dtype=torch.float64)
+            u = u.to(dtype=dtype)
 
             # Get dynamics
             u_t = (u - u_prev) / dt
             u_tt = (u - 2.0 * u_prev + u_prev2) / (dt**2)
 
-            F_ext = torch.zeros((mesh.n_nodes, 2), dtype=torch.float64, device=device)
+            # Get external forces
+            F_ext = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
             F_ext[mesh.right_nodes] = batch.trac_ext * mesh.right_lengths.unsqueeze(-1)
 
             # Get kinematics

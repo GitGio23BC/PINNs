@@ -37,8 +37,8 @@ model:
 # ==========================================
 training:
   method: "base"
-  device: "cpu"
-  epochs: 1000
+  device: "cuda:0"
+  epochs: 100
   
   causal_annealing:
     eps_init: 1e-4

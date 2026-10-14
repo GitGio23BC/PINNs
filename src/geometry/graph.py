@@ -68,8 +68,8 @@ def create_graph(
     device: torch.device | str = "cpu",
 ) -> Graph:
 
-    u = mesh.nodes.clone().to(device=device, dtype=torch.float64)
-    x = world_pos.clone().to(device=device, dtype=torch.float64)
+    u = mesh.nodes.clone().to(device=device, dtype=torch.float32)
+    x = world_pos.clone().to(device=device, dtype=torch.float32)
 
     senders = torch.cat([mesh.edges[:, 0], mesh.edges[:, 1]], dim=0).to(
         device=device, dtype=torch.long
@@ -84,11 +84,11 @@ def create_graph(
     x_rel = x[senders] - x[receivers]
     x_dist = torch.linalg.vector_norm(x_rel, dim=-1, keepdim=True)
 
-    node_type = node_type.to(device=device, dtype=torch.float64)
+    node_type = node_type.to(device=device, dtype=torch.float32)
     node_features = torch.cat([node_type], dim=-1)
 
     edge_features = torch.cat([u_rel, u_dist, x_rel, x_dist], dim=-1)
-    edge_features = edge_features.to(device=device, dtype=torch.float64)
+    edge_features = edge_features.to(device=device, dtype=torch.float32)
 
     return Graph(
         mesh_nodes=u,

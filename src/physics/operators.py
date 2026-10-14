@@ -6,7 +6,7 @@ from src.geometry.mesh import Mesh
 def compute_nodal_masses(mesh: Mesh, rho: float) -> torch.Tensor:
     nodal_masses = torch.zeros(
         mesh.n_nodes,
-        dtype=torch.float64,
+        dtype=mesh.nodes.dtype,
         device=mesh.nodes.device,
     )
     element_masses = rho * mesh.elements_area
