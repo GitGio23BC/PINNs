@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename
@@ -19,14 +20,49 @@ from src.utils import init_logging, load_config
 from src.utils.tensor_tools import stencil_grad, triangle_shape_gradients
 
 
+def _free_region_masks(mesh) -> dict[str, torch.Tensor]:
+    """Return disjoint node regions, represented on the flattened free DOFs."""
+    n_nodes = mesh.n_nodes
+    boundary = torch.zeros(n_nodes, dtype=torch.bool, device=mesh.nodes.device)
+    boundary[mesh.boundary_nodes] = True
+
+    right = torch.zeros_like(boundary)
+    right[mesh.right_nodes] = True
+    left = torch.zeros_like(boundary)
+    left[mesh.left_nodes] = True
+    top = torch.zeros_like(boundary)
+    top[mesh.top_nodes] = True
+    bottom = torch.zeros_like(boundary)
+    bottom[mesh.bottom_nodes] = True
+
+    regions = {
+        "interior": ~boundary,
+        "right_loaded": right,
+        "left_support_free": left & ~right,
+        "top_bottom": (top | bottom) & ~right & ~left,
+    }
+    free_dofs = mesh.free_dofs
+    masks = {}
+    for name, node_mask in regions.items():
+        dof_mask = node_mask.unsqueeze(-1).expand(-1, 2).reshape(-1)
+        masks[name] = free_dofs[torch.isin(free_dofs, torch.nonzero(dof_mask).flatten())]
+    return masks
+
+
 def test(model_path: Path | None = None):
     # Logging and set-up
     init_logging()
     logger = logging.getLogger(__name__)
 
     cfg = load_config()
-    device = torch.device(cfg["training"].get("device", "cpu"))
+    requested_device = cfg["training"].get("device", "cpu")
+    if requested_device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            "È stata richiesta una GPU CUDA per il test, ma PyTorch non la rileva."
+        )
+    device = torch.device(requested_device)
     output_dir = Path(cfg.get("output_dir", "./output"))
+    dtype = torch.float32
 
     if model_path is None:
         model_path = output_dir / f"{cfg['model']['model_name']}.pt"
@@ -63,16 +99,61 @@ def test(model_path: Path | None = None):
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
 
+    dataset = {
+        key: value.to(device=device, dtype=dtype)
+        if isinstance(value, torch.Tensor) and value.is_floating_point()
+        else value.to(device=device)
+        if isinstance(value, torch.Tensor)
+        else value
+        for key, value in dataset.items()
+    }
+
     data_loader = MGNData(dataset, mesh)
     time_steps = len(dataset["time"])
     dt = data_loader.dt
     time_grid = dataset["time"]
+    traction_scale = float(cfg["physics"]["sigma_max"])
+    region_dofs = _free_region_masks(mesh)
+    force_reference = torch.zeros(
+        (mesh.n_nodes, 2), dtype=dtype, device=device
+    )
+    force_reference[mesh.right_nodes, 0] = (
+        traction_scale * mesh.right_lengths
+    )
+    force_scale_free = torch.mean(
+        force_reference.reshape(-1)[mesh.free_dofs] ** 2
+    ).clamp_min(1e-8)
+    nonzero_force = force_reference.reshape(-1)[mesh.free_dofs].abs() > 0
+    force_scale_nonzero = torch.mean(
+        force_reference.reshape(-1)[mesh.free_dofs][nonzero_force] ** 2
+    ).clamp_min(1e-8)
+    logger.info(
+        "PAKO force scales: free_mean_sq=%.6e, nonzero_mean_sq=%.6e, "
+        "free_dofs=%d, nonzero_force_dofs=%d",
+        force_scale_free.item(),
+        force_scale_nonzero.item(),
+        mesh.free_dofs.numel(),
+        nonzero_force.sum().item(),
+    )
 
     # Model
-    dtype = torch.float32
-    mgn = MeshGraphNet().to(device=device, dtype=dtype)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
+    model_cfg = cfg["model"]
+    layer_indices = [
+        int(match.group(1))
+        for key in state_dict
+        if (match := re.match(r"processor\.layers\.(\d+)\.", key))
+    ]
+    num_layers = max(layer_indices, default=int(model_cfg["num_layers"])) + 1
+    mgn = MeshGraphNet(
+        node_in_dim=int(model_cfg["node_in_dim"]),
+        edge_in_dim=int(model_cfg["edge_in_dim"]),
+        latent_dim=int(model_cfg["latent_dim"]),
+        hidden_dim=int(model_cfg["hidden_dim"]),
+        num_layers=num_layers,
+        output_dim=int(model_cfg["output_dim"]),
+    ).to(device=device, dtype=dtype)
     mgn.load_state_dict(state_dict)
     mgn.eval()
     logger.info(f"Loaded trained MeshGraphNet model from {model_path}")
@@ -91,6 +172,7 @@ def test(model_path: Path | None = None):
     # Rollout Initialisation
     u_prev = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
     u_prev2 = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
+    velocity_prev = torch.zeros_like(u_prev)
     world_pos = mesh.nodes.clone()
 
     all_u_pred = []
@@ -114,6 +196,9 @@ def test(model_path: Path | None = None):
             mesh=mesh,
             world_pos=world_pos,
             node_type=node_type,
+            velocity=velocity_prev,
+            boundary_traction=batch.trac_ext,
+            traction_scale=traction_scale,
             device=device,
         )
 
@@ -163,19 +248,37 @@ def test(model_path: Path | None = None):
 
         all_u_pred.append(u.detach().cpu())
         all_S_pred.append(S.detach().cpu())
-        all_pako_res.append(R_pako.detach().cpu())
+        all_pako_res.append(R_pako.reshape(-1)[mesh.free_dofs].detach().cpu())
 
         u_prev2 = u_prev.detach().clone()
         u_prev = u.detach().clone()
+        velocity_prev = ((u_prev - u_prev2) / dt).detach()
         world_pos = (mesh.nodes + u_prev).detach()
 
     # Metrics computation
+    reference_trajectory = dataset["u_complete"].detach().cpu()
+    reference_norm = torch.linalg.norm(reference_trajectory.flatten()).clamp_min(1e-8)
     l2_err_traj = [
-        rl2e(u_pred, dataset["u"][t].cpu()).item()
+        torch.linalg.norm(u_pred - reference_trajectory[t]).div(reference_norm).item()
         for t, u_pred in enumerate(all_u_pred)
     ]
     final_l2_error = l2_err_traj[-1]
     mean_pako = torch.cat(all_pako_res).abs().mean().item()
+    residual_free = torch.cat(all_pako_res)
+    region_summary = []
+    for name, dofs in region_dofs.items():
+        if dofs.numel() == 0:
+            continue
+        positions = torch.searchsorted(
+            mesh.free_dofs.detach().cpu(), dofs.detach().cpu()
+        )
+        values = residual_free.reshape(time_steps, -1)[:, positions]
+        region_summary.append(
+            f"{name}: mean_abs={values.abs().mean().item():.6e}, "
+            f"rms={torch.sqrt(torch.mean(values**2)).item():.6e}, "
+            f"max_abs={values.abs().max().item():.6e}"
+        )
+    logger.info("Free-DOF momentum residuals by region | %s", " | ".join(region_summary))
 
     logger.info("=" * 60)
     logger.info(f"Evaluation Results for: {model_path.name}")
@@ -237,11 +340,13 @@ def test(model_path: Path | None = None):
     axes[0, 1].grid(True, alpha=0.3)
 
     # Subplot 3: Momentum Residual Norm
-    res_norm = torch.linalg.norm(torch.cat(all_pako_res, dim=0), dim=-1).numpy()
-    axes[0, 2].hist(res_norm, bins=30, color="crimson", alpha=0.7, edgecolor="black")
+    res_free = residual_free.numpy()
+    axes[0, 2].hist(
+        res_free, bins=30, color="crimson", alpha=0.7, edgecolor="black"
+    )
     axes[0, 2].set_yscale("log")
     axes[0, 2].set_title("Momentum Balance Residual Norm")
-    axes[0, 2].set_xlabel(r"$\|\mathbf{R}_{\mathrm{mom}}\|$")
+    axes[0, 2].set_xlabel(r"$|R_{\mathrm{mom,free}}|$")
     axes[0, 2].set_ylabel("Count (Log Scale)")
     axes[0, 2].grid(True, alpha=0.3)
 

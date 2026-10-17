@@ -18,11 +18,17 @@ def rollout_trajectory(
     model: MeshGraphNet,
     mesh,
     node_type: torch.Tensor,
+    time_grid: torch.Tensor,
+    traction_trajectory: torch.Tensor,
+    traction_scale: float,
     time_steps: int,
     device: torch.device,
 ) -> np.ndarray:
     model.eval()
     u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float32, device=device)
+    u_prev2 = torch.zeros_like(u_prev)
+    dt = float((time_grid[-1] - time_grid[0]) / max(time_steps - 1, 1))
+    velocity_prev = torch.zeros_like(u_prev)
     world_pos = mesh.nodes.clone()
 
     u_pred_trajectory = []
@@ -33,12 +39,17 @@ def rollout_trajectory(
                 mesh=mesh,
                 world_pos=world_pos,
                 node_type=node_type,
+                velocity=velocity_prev,
+                boundary_traction=traction_trajectory[_],
+                traction_scale=traction_scale,
                 device=device,
             )
             u = model(graph).to(dtype=torch.float32)
             u_pred_trajectory.append(u.cpu())
 
+            u_prev2 = u_prev.detach().clone()
             u_prev = u.detach().clone()
+            velocity_prev = ((u_prev - u_prev2) / dt).detach()
             world_pos = (mesh.nodes + u_prev).detach()
 
     return torch.stack(u_pred_trajectory, dim=0).numpy()
@@ -109,14 +120,31 @@ def animate_deformation(
             trac_traj[:, None, :] * right_lengths[None, :, None]
         )
 
-    # Model 
-    mgn = MeshGraphNet().to(device=device, dtype=torch.float32)
+    # Model
+    model_cfg = cfg["model"]
+    mgn = MeshGraphNet(
+        node_in_dim=int(model_cfg["node_in_dim"]),
+        edge_in_dim=int(model_cfg["edge_in_dim"]),
+        latent_dim=int(model_cfg["latent_dim"]),
+        hidden_dim=int(model_cfg["hidden_dim"]),
+        num_layers=int(model_cfg["num_layers"]),
+        output_dim=int(model_cfg["output_dim"]),
+    ).to(device=device, dtype=torch.float32)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     mgn.load_state_dict(state_dict)
 
     # Rollout predicted trajectory
-    u_pred_traj = rollout_trajectory(mgn, mesh, node_type, num_frames, device)
+    u_pred_traj = rollout_trajectory(
+        mgn,
+        mesh,
+        node_type,
+        dataset["time"],
+        dataset["trac_ext_complete"],
+        float(cfg["physics"]["sigma_max"]),
+        num_frames,
+        device,
+    )
 
     # Geometry bounds & plot setup
     nodes_ref = mesh.nodes.cpu().numpy()

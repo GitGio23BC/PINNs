@@ -65,6 +65,9 @@ def create_graph(
     mesh: Mesh,
     node_type: torch.Tensor,
     world_pos: torch.Tensor,
+    velocity: torch.Tensor,
+    boundary_traction: torch.Tensor | None = None,
+    traction_scale: float = 1.0,
     device: torch.device | str = "cpu",
 ) -> Graph:
 
@@ -85,7 +88,42 @@ def create_graph(
     x_dist = torch.linalg.vector_norm(x_rel, dim=-1, keepdim=True)
 
     node_type = node_type.to(device=device, dtype=torch.float32)
-    node_features = torch.cat([node_type], dim=-1)
+    if traction_scale <= 0.0:
+        raise ValueError("traction_scale must be positive.")
+
+    velocity_feature = torch.as_tensor(
+        velocity, device=device, dtype=torch.float32
+    )
+    if velocity_feature.shape != (mesh.n_nodes, 2):
+        raise ValueError(
+            "velocity must have shape "
+            f"({mesh.n_nodes}, 2); got {tuple(velocity_feature.shape)}."
+        )
+
+    traction_feature = torch.zeros(
+        (mesh.n_nodes, 2), device=device, dtype=torch.float32
+    )
+    if boundary_traction is not None:
+        traction = torch.as_tensor(
+            boundary_traction, device=device, dtype=torch.float32
+        )
+        if traction.ndim == 1 and traction.shape[0] == 2:
+            traction_feature[mesh.right_nodes] = traction
+        elif traction.ndim == 2 and traction.shape == (mesh.n_nodes, 2):
+            traction_feature = traction
+        elif traction.ndim == 2 and traction.shape == (len(mesh.right_nodes), 2):
+            traction_feature[mesh.right_nodes] = traction
+        else:
+            raise ValueError(
+                "boundary_traction must have shape (2,), "
+                f"({len(mesh.right_nodes)}, 2), or ({mesh.n_nodes}, 2); "
+                f"got {tuple(traction.shape)}."
+            )
+        traction_feature = traction_feature / float(traction_scale) #da capire perchè  normalizzare con la traction scale
+
+    node_features = torch.cat(
+        [node_type, velocity_feature, traction_feature], dim=-1
+    )
 
     edge_features = torch.cat([u_rel, u_dist, x_rel, x_dist], dim=-1)
     edge_features = edge_features.to(device=device, dtype=torch.float32)
@@ -97,4 +135,3 @@ def create_graph(
         node_features=node_features,
         edge_features=edge_features,
     )
-

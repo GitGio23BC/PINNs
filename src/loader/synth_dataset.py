@@ -516,7 +516,7 @@ def generate_inertial_dataset(
                     f"Newton-Raphson failed to converge after {max_iters} iterations."
                 )
 
-        psi_traj[n] = psi_int
+        psi_traj[n] = psi_int.detach()
         u_traj[n] = u.detach().view(-1, 2)
         u_t_traj[n] = current_u_t.detach().view(-1, 2)
         u_tt_traj[n] = current_u_tt.detach().view(-1, 2)

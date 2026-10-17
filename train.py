@@ -11,6 +11,8 @@ from src.loader import MGNBatch, MGNData, generate_inertial_dataset
 from src.loss import *
 from src.models import MeshGraphNet
 from src.physics import Kinematics, Ogden, pako_residual_2D
+from test import test
+from src.plot import animate_deformation
 from src.utils import (
     CSVLogger,
     deep_merge,
@@ -36,6 +38,10 @@ def compute_step_loss(
     dN_dX: torch.Tensor,
     batch: MGNBatch,
     F_ext: torch.Tensor,
+    u_scale: torch.Tensor,
+    psi_scale: torch.Tensor,
+    force_scale: torch.Tensor,
+    free_dofs: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
     lambda_data = weights["lambda_data"]
     lambda_dirichlet = weights["lambda_dirichlet"]
@@ -44,7 +50,14 @@ def compute_step_loss(
 
     # Data loss
     psi_pred = torch.sum(ogden.psi * mesh.elements_area)  # type: ignore
-    l_data = data_loss(u_pred, batch.u_exact, psi_pred, batch.psi_exact)
+    l_data = data_loss(
+        u_pred,
+        batch.u_exact,
+        psi_pred,
+        batch.psi_exact,
+        u_scale,
+        psi_scale,
+    )
 
     # Dirichlet loss
     l_dirichlet = dirichlet_loss(
@@ -58,7 +71,7 @@ def compute_step_loss(
 
     # Pako loss
     R = pako_residual_2D(P, mesh, dN_dX, b, rho, u_t, u_tt, alpha_rayleigh, F_ext)
-    l_pako = pako_loss(R, F_ext)
+    l_pako = pako_loss(R, force_scale, free_dofs)
 
     l_physics = l_dirichlet + l_neumann + l_pako
 
@@ -81,7 +94,8 @@ def compute_step_loss(
     return l_step, l_physics, metrics
 
 
-def train(overrides: dict | None = None):
+
+def train(overrides: dict | None = None) -> Path:
     # Logging and set-up
     cfg = load_config("config.yaml")
     cfg = deep_merge(cfg, overrides)
@@ -168,9 +182,19 @@ def train(overrides: dict | None = None):
 
     data_loader = MGNData(dataset, mesh)
 
+    if "u_complete" not in dataset or "psi_complete" not in dataset:
+        raise KeyError(
+            "Il dataset deve contenere 'u_complete' e 'psi_complete' "
+            "per la data loss in scala fisica."
+        )
+
+    u_scale = torch.mean(dataset["u_complete"] ** 2).clamp_min(1e-8).detach()
+    psi_scale = torch.mean(dataset["psi_complete"] ** 2).clamp_min(1e-8).detach()
+
     # Time mesh
     time_steps = len(dataset["time"])
     dt = data_loader.dt
+    traction_scale = float(cfg["physics"]["sigma_max"])
 
     # Model
     model_cfg = cfg["model"]
@@ -179,6 +203,7 @@ def train(overrides: dict | None = None):
         edge_in_dim=int(model_cfg["edge_in_dim"]),
         latent_dim=int(model_cfg["latent_dim"]),
         hidden_dim=int(model_cfg["hidden_dim"]),
+        num_layers=int(model_cfg["num_layers"]),
         output_dim=int(model_cfg["output_dim"]),
     ).to(device=device, dtype=dtype)
 
@@ -200,6 +225,19 @@ def train(overrides: dict | None = None):
     beta = float(p_cfg["beta"])  # TO SEARCH
     b = torch.tensor(p_cfg["body_force"], device=device, dtype=dtype)
     rho = float(p_cfg["rho_0"])
+    sigma_max = float(p_cfg["sigma_max"])
+
+    force_reference = torch.zeros(
+        (mesh.n_nodes, 2),
+        dtype=dtype,
+        device=device,
+    )
+    force_reference[mesh.right_nodes, 0] = (
+        sigma_max * mesh.right_lengths
+    )
+    force_scale = torch.mean(
+        force_reference.reshape(-1)[mesh.free_dofs] ** 2
+    ).clamp_min(1e-8).detach()
 
     # TO PUT IN THE CONFIG
     zeta = 0.03
@@ -265,6 +303,7 @@ def train(overrides: dict | None = None):
         # Initialisation
         u_prev = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
         u_prev2 = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
+        velocity_prev = torch.zeros_like(u_prev)
 
         u_t = torch.zeros_like(u_prev)
         u_tt = torch.zeros_like(u_prev)
@@ -283,6 +322,9 @@ def train(overrides: dict | None = None):
                 mesh=mesh,
                 world_pos=world_pos,
                 node_type=node_type,
+                velocity=velocity_prev,
+                boundary_traction=batch.trac_ext,
+                traction_scale=traction_scale,
                 device=device,
             )
 
@@ -321,6 +363,10 @@ def train(overrides: dict | None = None):
                 dN_dX=dN_dX,
                 batch=batch,
                 F_ext=F_ext,
+                u_scale=u_scale,
+                psi_scale=psi_scale,
+                force_scale=force_scale,
+                free_dofs=mesh.free_dofs,
             )
 
             # Annealing
@@ -330,13 +376,15 @@ def train(overrides: dict | None = None):
             weighted_loss = causal_w * l_step
             total_epoch_loss += weighted_loss.detach().item()
 
-            # Backpropagation
+            # The constitutive stress is obtained with autograd.grad(create_graph=True).
+            # Retain only this step's graph until the backward pass completes.
             weighted_loss.backward()
 
             # Update rollout prediction terms
             l_prev_physics += l_physics.detach().item() / (t_step + 1)
             u_prev2 = u_prev.detach().clone()
             u_prev = u.detach().clone()
+            velocity_prev = ((u_prev - u_prev2) / dt).detach()
             world_pos = (mesh.nodes + u_prev).detach()
 
             # Logging
@@ -365,6 +413,8 @@ def train(overrides: dict | None = None):
 
     logger.info("-----------------------------Train Ended-----------------------------")
 
+    return output_dir / f"{model_name}.pt" 
+
 
 if __name__ == "__main__":
     cfg = load_config()
@@ -384,4 +434,6 @@ if __name__ == "__main__":
 
                 train(overrides)
     else:
-        train()
+        model_pth = train()
+        test(model_pth=model_pth)
+        animate_deformation(model_pth=model_pth)

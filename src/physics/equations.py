@@ -1,6 +1,7 @@
 import torch
 
 
+
 class Kinematics:
     def __init__(self, grad_u: torch.Tensor) -> None:
         self.grad_u = grad_u

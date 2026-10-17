@@ -27,11 +27,11 @@ class MGNData:
     def get_batch(self, step: int) -> MGNBatch:
 
         return MGNBatch(
-            t=self.time[step],
+            t=self.time[step].detach(),
             dt=self.dt,
-            X_ref=self.dataset["nodes"],
-            u_exact=self.dataset["u"][step],
-            psi_exact=self.dataset["psi"][step],
-            u_fixed_exact=self.dataset["u_fixed"][step],
-            trac_ext=self.dataset["trac_ext"][step],
+            X_ref=self.dataset["nodes"].detach(),
+            u_exact=self.dataset["u_complete"][step].detach(),
+            psi_exact=self.dataset["psi_complete"][step].detach(),
+            u_fixed_exact=self.dataset["u_fixed"][step].detach(),
+            trac_ext=self.dataset["trac_ext_complete"][step].detach(),
         )
