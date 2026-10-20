@@ -94,7 +94,6 @@ def compute_step_loss(
     return l_step, l_physics, metrics
 
 
-
 def train(overrides: dict | None = None) -> Path:
     # Logging and set-up
     cfg = load_config("config.yaml")
@@ -103,9 +102,7 @@ def train(overrides: dict | None = None) -> Path:
 
     requested_device = cfg["training"].get("device", "cuda")
     if requested_device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError(
-            "È stata richiesta una GPU CUDA, ma PyTorch non la rileva."
-        )
+        raise RuntimeError("È stata richiesta una GPU CUDA, ma PyTorch non la rileva.")
 
     device = torch.device(requested_device)
     logger = logging.getLogger(__name__)
@@ -114,11 +111,12 @@ def train(overrides: dict | None = None) -> Path:
     if device.type == "cuda":
         logger.info("GPU: %s", torch.cuda.get_device_name(device))
 
-    output_dir = Path(cfg["output_dir"])
+    model_name = cfg["model"]["model_name"]
+
+    output_dir = Path(cfg["output_dir"]) / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model_name = cfg["model"]["model_name"]
-    checkpoint_dir = Path(output_dir / "checkpoints" / model_name)
+    checkpoint_dir = Path(output_dir / "checkpoints")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     init_logging()
@@ -137,7 +135,7 @@ def train(overrides: dict | None = None) -> Path:
             "eps",
         ],
     )
-
+    metrics = {}
     method = cfg["training"]["method"]
     dtype = torch.float32
 
@@ -232,12 +230,12 @@ def train(overrides: dict | None = None) -> Path:
         dtype=dtype,
         device=device,
     )
-    force_reference[mesh.right_nodes, 0] = (
-        sigma_max * mesh.right_lengths
+    force_reference[mesh.right_nodes, 0] = sigma_max * mesh.right_lengths
+    force_scale = (
+        torch.mean(force_reference.reshape(-1)[mesh.free_dofs] ** 2)
+        .clamp_min(1e-8)
+        .detach()
     )
-    force_scale = torch.mean(
-        force_reference.reshape(-1)[mesh.free_dofs] ** 2
-    ).clamp_min(1e-8).detach()
 
     # TO PUT IN THE CONFIG
     zeta = 0.03
@@ -256,12 +254,11 @@ def train(overrides: dict | None = None) -> Path:
 
     ## Loss weights
     cfg_w = cfg["training"]["loss_weights"]
-    loss_weights = {
-        "lambda_data": float(cfg_w["lambda_data"]),
-        "lambda_dirichlet": float(cfg_w["lambda_dirichlet"]),
-        "lambda_neumann": float(cfg_w["lambda_neumann"]),
-        "lambda_pako": float(cfg_w["lambda_pako"]),
-    }
+
+    data_weight = 1.0
+    dirichlet_weight = 1.0
+    neumann_weight = 1.0
+    pako_weight = 1.0
 
     epochs = int(cfg["training"]["epochs"])
 
@@ -284,22 +281,28 @@ def train(overrides: dict | None = None) -> Path:
 
     for epoch in tqdm(range(1, epochs + 1), desc="Epochs"):
         # Causal annealing
-        if epochs > 1:
+        if epoch > 2:
             loss_weights = {
-                    "lambda_data": float(cfg_w["lambda_data"]),
-                    "lambda_dirichlet": float(cfg_w["lambda_dirichlet"]),
-                    "lambda_neumann": float(cfg_w["lambda_neumann"]),
-                    "lambda_pako": float(cfg_w["lambda_pako"]),
-                }
+                "lambda_data": data_weight,
+                "lambda_dirichlet": dirichlet_weight,
+                "lambda_neumann": neumann_weight,
+                "lambda_pako": pako_weight,
+            }
             eps = eps_init * ((eps_final / eps_init) ** ((epoch - 1) / (epochs - 1)))
+        elif epoch == 2:
+            data_weight = 1 / metrics["l_data"]
+            dirichlet_weight = 1 / metrics["l_dirichlet"]
+            neumann_weight = 1 / metrics["l_neumann"]
+            pako_weight = 1 / metrics["l_pako"]
         else:
             loss_weights = {
-                    "lambda_data": 1,
-                    "lambda_dirichlet": 0,
-                    "lambda_neumann": 0,
-                    "lambda_pako": 0,
-                }
+                "lambda_data": 1,
+                "lambda_dirichlet": 0,
+                "lambda_neumann": 0,
+                "lambda_pako": 0,
+            }
             eps = eps_init
+
         # Initialisation
         u_prev = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
         u_prev2 = torch.zeros((mesh.n_nodes, 2), dtype=dtype, device=device)
@@ -317,14 +320,16 @@ def train(overrides: dict | None = None) -> Path:
 
         for t_step in range(time_steps):
             batch = data_loader.get_batch(t_step)
+            trac_feat = torch.zeros((mesh.n_nodes, 2), device=device, dtype=dtype)
+            trac_feat[mesh.right_nodes] = batch.trac_ext / traction_scale
+            velocity_feat = velocity_prev
 
             graph = create_graph(
                 mesh=mesh,
                 world_pos=world_pos,
                 node_type=node_type,
-                velocity=velocity_prev,
-                boundary_traction=batch.trac_ext,
-                traction_scale=traction_scale,
+                velocity=velocity_feat,
+                boundary_traction=trac_feat,
                 device=device,
             )
 
@@ -413,27 +418,10 @@ def train(overrides: dict | None = None) -> Path:
 
     logger.info("-----------------------------Train Ended-----------------------------")
 
-    return output_dir / f"{model_name}.pt" 
+    return output_dir / f"{model_name}.pt"
 
 
 if __name__ == "__main__":
-    cfg = load_config()
-    if cfg["bulk"]:
-        for train_type in ["standard", "ansatz_space"]:
-            for method in ["base", "traction", "dynamic", "visco", "full"]:
-                overrides = {
-                    "model": {
-                        "type": train_type,
-                        "model_name": f"{train_type}_model_{method}",
-                    },
-                    "output_dir": f"{train_type}/{method}",
-                    "training": {
-                        "device": "cuda" if torch.cuda.is_available() else "cpu"
-                    },
-                }
-
-                train(overrides)
-    else:
-        model_pth = train()
-        test(model_pth=model_pth)
-        animate_deformation(model_pth=model_pth)
+    model_pth = train()
+    test(model_path=model_pth)
+    animate_deformation(model_path=model_pth)

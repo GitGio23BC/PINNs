@@ -6,7 +6,7 @@ output_dir: "./output"
 bulk: false
 
 data:
-  dataset_name: "inertial_dataset_sin.pt"
+  dataset_name: "debug_fast.pt"
   data_dir: "./data/synt"
   batch_size: 1
   num_workers: 0
@@ -15,15 +15,15 @@ domain:
   x_range: [0.0, 1.0]
   y_range: [0.0, 1.0]
   t_range: [0.0, 2.0]
-  nx: 10
-  ny: 10
+  nx: 5
+  ny: 5
   n_steps: 200
 
 # ==========================================
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "MGN_2D_sin_pull"
+  model_name: "MGN_2D"
   type: "standard"
   node_in_dim: 8
   edge_in_dim: 6     
@@ -38,7 +38,7 @@ model:
 training:
   method: "base"
   device: "cuda:0"
-  epochs: 100
+  epochs: 10000
   
   causal_annealing:
     eps_init: 1e-4

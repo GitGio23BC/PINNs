@@ -34,14 +34,16 @@ def rollout_trajectory(
     u_pred_trajectory = []
 
     with torch.no_grad():
-        for _ in range(time_steps):
+        for t_n in range(time_steps):
+            trac_feat = torch.zeros((mesh.n_nodes, 2), device=device, dtype=torch.float32)
+            trac_feat[mesh.right_nodes] =traction_trajectory[t_n] / traction_scale
+            velocity_feat = velocity_prev
             graph = create_graph(
                 mesh=mesh,
                 world_pos=world_pos,
                 node_type=node_type,
                 velocity=velocity_prev,
-                boundary_traction=traction_trajectory[_],
-                traction_scale=traction_scale,
+                boundary_traction=trac_feat,
                 device=device,
             )
             u = model(graph).to(dtype=torch.float32)
@@ -57,15 +59,19 @@ def rollout_trajectory(
 
 def animate_deformation(
     model_path: Path | None = None,
-    output_filename: str = "mesh_deformation.mp4",
+    output_filename: str | None = None,
     fps: int = 20,
-):
+):  
+    dtype = torch.float32
     # Config and logging
     init_logging()
     cfg = load_config()
     device = torch.device(cfg["training"].get("device", "cpu"))
-    output_dir = Path(cfg.get("output_dir", "./output"))
+    output_dir = Path(cfg.get("output_dir", "./output")) / cfg['model']['model_name']
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if output_filename is None:
+        output_filename = cfg['model']['model_name'] + "_deformation.gif"
 
     if model_path is None:
         model_path = output_dir / f"{cfg['model']['model_name']}.pt"
@@ -96,20 +102,28 @@ def animate_deformation(
     # Data
     data_dir = Path(cfg["data"]["data_dir"])
     dataset_path = data_dir / cfg["data"]["dataset_name"]
-
     if not dataset_path.exists():
         print(f"Dataset not found at {dataset_path}. Generating now...")
         dataset = generate_inertial_dataset(cfg, device=device)
     else:
         dataset = torch.load(dataset_path, map_location=device, weights_only=False)
 
+    dataset = {
+        key: value.to(device=device, dtype=dtype)
+        if isinstance(value, torch.Tensor) and value.is_floating_point()
+        else value.to(device=device)
+        if isinstance(value, torch.Tensor)
+        else value
+        for key, value in dataset.items()
+    }
+
     time_grid = dataset["time"].cpu().numpy()
-    u_exact_traj = dataset["u"].cpu().numpy()
+    u_exact_traj = dataset["u_complete"].cpu().numpy()
     num_frames = len(time_grid)
 
     F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float32)
 
-    trac_traj = dataset["trac_ext"].cpu().numpy()
+    trac_traj = dataset["trac_ext_complete"].cpu().numpy()
     right_nodes = mesh.right_nodes.cpu().numpy()
     right_lengths = mesh.right_lengths.cpu().numpy()
 

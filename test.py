@@ -61,8 +61,8 @@ def test(model_path: Path | None = None):
             "È stata richiesta una GPU CUDA per il test, ma PyTorch non la rileva."
         )
     device = torch.device(requested_device)
-    output_dir = Path(cfg.get("output_dir", "./output"))
     dtype = torch.float32
+    output_dir = Path(cfg.get("output_dir", "./output")) / cfg['model']['model_name']
 
     if model_path is None:
         model_path = output_dir / f"{cfg['model']['model_name']}.pt"
@@ -191,14 +191,16 @@ def test(model_path: Path | None = None):
     logger.info("Starting PINN test rollout...")
     for t_step in range(time_steps):
         batch = data_loader.get_batch(t_step)
+        trac_feat = torch.zeros((mesh.n_nodes, 2), device=device, dtype=dtype)
+        trac_feat[mesh.right_nodes] =batch.trac_ext / traction_scale
+        velocity_feat = velocity_prev
 
         graph = create_graph(
             mesh=mesh,
             world_pos=world_pos,
             node_type=node_type,
-            velocity=velocity_prev,
-            boundary_traction=batch.trac_ext,
-            traction_scale=traction_scale,
+            velocity=velocity_feat,
+            boundary_traction= trac_feat,
             device=device,
         )
 
