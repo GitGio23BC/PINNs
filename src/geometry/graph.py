@@ -66,12 +66,14 @@ def create_graph(
     node_type: torch.Tensor,
     world_pos: torch.Tensor,
     velocity: torch.Tensor,
+    acceleration: torch.Tensor | None = None,
     boundary_traction: torch.Tensor | None = None,
     device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float32,
 ) -> Graph:
 
-    u = mesh.nodes.clone().to(device=device, dtype=torch.float32)
-    x = world_pos.clone().to(device=device, dtype=torch.float32)
+    u = mesh.nodes.clone().to(device=device, dtype=dtype)
+    x = world_pos.clone().to(device=device, dtype=dtype)
 
     senders = torch.cat([mesh.edges[:, 0], mesh.edges[:, 1]], dim=0).to(
         device=device, dtype=torch.long
@@ -86,20 +88,23 @@ def create_graph(
     x_rel = x[senders] - x[receivers]
     x_dist = torch.linalg.vector_norm(x_rel, dim=-1, keepdim=True)
 
-    node_type = node_type.to(device=device, dtype=torch.float32)
+    node_type = node_type.to(device=device, dtype=dtype)
 
     velocity_feature = torch.as_tensor(
-            velocity, device=device, dtype=torch.float32
+            velocity, device=device, dtype=dtype
+        )
+    acceleration_feature = torch.as_tensor(
+                acceleration, device=device, dtype=dtype
         )
     traction_feature = torch.as_tensor(
-            boundary_traction, device=device, dtype=torch.float32
+            boundary_traction, device=device, dtype=dtype
         )
     node_features = torch.cat(
-        [node_type, velocity_feature, traction_feature], dim=-1
+        [node_type, velocity_feature, acceleration_feature, traction_feature], dim=-1
     )
 
     edge_features = torch.cat([u_rel, u_dist, x_rel, x_dist], dim=-1)
-    edge_features = edge_features.to(device=device, dtype=torch.float32)
+    edge_features = edge_features.to(device=device, dtype=dtype)
 
     return Graph(
         mesh_nodes=u,

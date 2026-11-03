@@ -6,7 +6,7 @@ output_dir: "./output"
 bulk: false
 
 data:
-  dataset_name: "debug_fast.pt"
+  dataset_name: "debug_fast_gradino.pt"
   data_dir: "./data/synt"
   batch_size: 1
   num_workers: 0
@@ -23,9 +23,9 @@ domain:
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "MGN_2D"
+  model_name: "MGN_2D_step_acceleration"
   type: "standard"
-  node_in_dim: 8
+  node_in_dim: 10
   edge_in_dim: 6     
   latent_dim: 64
   hidden_dim: 64
@@ -38,7 +38,7 @@ model:
 training:
   method: "base"
   device: "cuda:0"
-  epochs: 10000
+  epochs: 500
   
   causal_annealing:
     eps_init: 1e-4

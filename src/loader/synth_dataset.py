@@ -40,9 +40,9 @@ def compute_external_force(
     F_ext = torch.zeros(mesh.n_dofs, dtype=dtype, device=device)
 
     # Magnitude (N/m)
-    trac_ext = sigma_max * torch.sin(
-        torch.pi * t_n.to(device=device, dtype=dtype) / T
-    )
+    time_value = t_n.to(device=device, dtype=dtype)
+    trac_ext = sigma_max * torch.sin(torch.pi * time_value / T) * (time_value <= T/2).to(dtype=dtype, device=device)
+
     trac_vec = torch.stack(
         (trac_ext, torch.zeros((), dtype=dtype, device=device))
     )
