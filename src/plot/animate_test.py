@@ -121,12 +121,12 @@ def animate_deformation(
     }
 
     time_grid = dataset["time"].cpu().numpy()
-    u_exact_traj = dataset["u_complete"].cpu().numpy()
+    u_exact_traj = dataset["u"].cpu().numpy()
     num_frames = len(time_grid)
 
     F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float32)
 
-    trac_traj = dataset["trac_ext_complete"].cpu().numpy()
+    trac_traj = dataset["trac_ext"].cpu().numpy()
     right_nodes = mesh.right_nodes.cpu().numpy()
     right_lengths = mesh.right_lengths.cpu().numpy()
 
@@ -157,7 +157,7 @@ def animate_deformation(
         mesh,
         node_type,
         dataset["time"],
-        dataset["trac_ext_complete"],
+        dataset["trac_ext"],
         float(cfg["physics"]["sigma_max"]),
         num_frames,
         device,

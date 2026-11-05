@@ -6,11 +6,16 @@ from torch.optim import Adam
 from tqdm import tqdm
 
 from src.geometry import Mesh, create_graph, create_mesh
-from src.loader import BodyState, LossScales, MGNBatch, MGNData, generate_inertial_dataset
+from src.loader import (
+    BodyState,
+    LossScales,
+    MGNBatch,
+    MGNData,
+    generate_inertial_dataset,
+)
 from src.loss import data_loss, dirichlet_loss, neumann_loss, pako_loss
 from src.models import MeshGraphNet
 from src.physics import Kinematics, Ogden, pako_residual_2D
-from test import test
 from src.plot import animate_deformation
 from src.utils import (
     CSVLogger,
@@ -21,11 +26,13 @@ from src.utils import (
     stencil_grad,
     triangle_shape_gradients,
 )
+from test import test
 
 
 def compute_step_loss(
     mesh: Mesh,
     batch: MGNBatch,
+    ogden: Ogden,
     state: BodyState,
     alpha_rayleigh: float,
     beta_rayleigh: float,
@@ -80,8 +87,8 @@ def compute_step_loss(
     )
     l_pako = pako_loss(
         residual=R, 
-        force_scale=state.force_scale, 
-        free_dofs=state.free_dofs)
+        force_scale=scales.force_scale, 
+        free_dofs=mesh.free_dofs)
 
     l_physics = l_dirichlet + l_neumann + l_pako
 
@@ -99,6 +106,7 @@ def compute_step_loss(
         "l_dirichlet": l_dirichlet.detach(),
         "l_neumann": l_neumann.detach(),
         "l_pako": l_pako.detach(),
+        "l_physics": l_physics.detach(),
     }
 
     return l_step, l_physics, metrics
@@ -121,6 +129,7 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
         logger.info("GPU: %s", torch.cuda.get_device_name(device))
 
     model_name = cfg["model"]["model_name"]
+    print(model_name)
 
     output_dir = Path(cfg["output_dir"]) / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +147,7 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
             "l_step",
             "l_data",
             "l_dirichlet",
+            "l_physics",
             "l_neumann",
             "l_pako",
             "causal_w",
@@ -241,8 +251,8 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
     )
 
     # TO PUT IN THE CONFIG
-    zeta = 0.03
-    w_max, w_min = 1.0, 0.01
+    zeta = float(p_cfg["zeta"])
+    w_min, w_max = [float(w) for w in p_cfg["w"]]
     alpha_rayleigh = 2.0 * zeta * (w_max + w_min)
     beta_rayleigh = 0
 
@@ -260,9 +270,9 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
 
     loss_weights = {
         "lambda_data": 1.0,
-        "lambda_dirichlet": 1.0,
-        "lambda_neumann": 1.0,
-        "lambda_pako": 1.0,
+        "lambda_dirichlet": 0.0,
+        "lambda_neumann": 0.0,
+        "lambda_pako": 0.0,
     }
 
     epochs = int(t_cfg["epochs"])
@@ -287,7 +297,7 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
             else eps_init
         )
 
-        if epoch == 2:
+        if epoch == warming_epochs:
             temp_metric = metrics.copy()
             loss_weights = {
                 "lambda_data": 1 / temp_metric["l_data"],
@@ -311,7 +321,6 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
         epoch_metrics = []
 
         optimizer.zero_grad()
-
         for t_step in range(time_steps):
             batch = data_loader.get_batch(t_step)
             trac_feat = torch.zeros((mesh.n_nodes, 2), device=device, dtype=dtype)
@@ -367,8 +376,9 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
                 mesh=mesh,
                 dN_dX=dN_dX,
                 batch=batch,
+                ogden=ogden,
                 state=state,
-                scales_=scales,
+                scales=scales,
             )
 
             # Annealing
@@ -451,6 +461,19 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
 
 
 if __name__ == "__main__":
-    model_pth = train()
-    test(model_path=model_pth)
-    animate_deformation(model_path=model_pth)
+    dataset_names = [
+        "F_const_stiff.pt",
+        "F_step_stiff.pt",
+        "F_ramp_stiff.pt",
+        "F_half_sin_stiff.pt",
+        "F_sin_stiff.pt",
+    ]
+    for dataset_name in dataset_names:
+        model_name = f"DEBUG_{Path(dataset_name).stem}"
+        overrides = {
+            "model": {"model_name": model_name},
+            "data": {"dataset_name": dataset_name},
+        }
+        model_pth = train(overrides=overrides)
+        test(model_path=model_pth)
+        animate_deformation(model_path=model_pth)

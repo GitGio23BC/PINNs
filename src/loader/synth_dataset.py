@@ -41,21 +41,18 @@ def compute_external_force(
 
     # Magnitude (N/m)
     time_value = t_n.to(device=device, dtype=dtype)
-    trac_ext = sigma_max * torch.sin(torch.pi * time_value / T) * (time_value <= T/2).to(dtype=dtype, device=device)
-
-    trac_vec = torch.stack(
-        (trac_ext, torch.zeros((), dtype=dtype, device=device))
-    )
+    traction = torch.tensor([sigma_max, 0], dtype=dtype, device=device) * torch.sin(
+        2*torch.pi * time_value / T
+    ).to(dtype=dtype, device=device)
 
     right_dofs_x = 2 * mesh.right_nodes
-    F_ext[right_dofs_x] = trac_ext * mesh.right_lengths
+    F_ext[right_dofs_x] = traction[0] * mesh.right_lengths
 
-    return F_ext, trac_vec
+    return F_ext, traction
 
 
 def generate_inertial_dataset(
-    cfg: dict,
-    device: str | torch.device = "cpu",
+    cfg: dict, device: str | torch.device = "cpu", dtype: torch.dtype = torch.float64
 ) -> dict[str, torch.Tensor]:
 
     data_dir = Path(cfg["data"]["data_dir"])
@@ -78,7 +75,7 @@ def generate_inertial_dataset(
         nx=nx,
         ny=ny,
         device=device,
-        dtype=torch.float64,
+        dtype=dtype,
     )
     # Temporal Grid
     t0, t_final = cfg["domain"]["t_range"]
@@ -91,11 +88,9 @@ def generate_inertial_dataset(
 
     # Odgen coefficient
     tissue = phys_cfg["tissue"]
-    alphas_ogden = torch.tensor(
-        phys_cfg["alphas"][tissue], dtype=torch.float64, device=device
-    )
+    alphas_ogden = torch.tensor(phys_cfg["alphas"][tissue], dtype=dtype, device=device)
     mus_list = [float(mu) for mu in phys_cfg["mus"][tissue]]
-    mus_ogden = torch.tensor(mus_list, dtype=torch.float64, device=device)
+    mus_ogden = torch.tensor(mus_list, dtype=dtype, device=device)
 
     # Volumetric parameters
     lambda_ogden = float(phys_cfg["lam"])
@@ -111,9 +106,9 @@ def generate_inertial_dataset(
 
     # Rayleigh Parameters (https://www.simscale.com/knowledge-base/rayleigh-damping-coefficients/)
     ################### TO SEARCH
-    ζ = 0.03  # https://mechcodex.com/reference/damping-ratios-typical
-    ω_max = 1
-    ω_min = 0.01
+    ω_min = 0.01  # https://mechcodex.com/reference/damping-ratios-typical
+    ζ = float(phys_cfg["zeta"])
+    ω_min, ω_max = [float(w) for w in phys_cfg["w"]]
     ##################
     alpha_rayleigh = 2.0 * ζ * (ω_max + ω_min)
     beta_rayleigh = 2.0 * ζ * (ω_max * ω_min) / (ω_max + ω_min)
@@ -121,7 +116,7 @@ def generate_inertial_dataset(
     # FEM values initialisation
     u = torch.zeros(
         mesh.n_dofs,
-        dtype=torch.float64,
+        dtype=dtype,
         device=device,
     )
 
@@ -143,37 +138,37 @@ def generate_inertial_dataset(
     # Dataset values
     psi_traj = torch.zeros(
         n_steps,
-        dtype=torch.float64,
+        dtype=dtype,
         device=device,
     )
     u_traj = torch.zeros(
         (n_steps, mesh.n_nodes, 2),
-        dtype=torch.float64,
+        dtype=dtype,
         device=device,
     )
     u_t_traj = torch.zeros(
         (n_steps, mesh.n_nodes, 2),
-        dtype=torch.float64,
+        dtype=dtype,
         device=device,
     )
     u_tt_traj = torch.zeros(
         (n_steps, mesh.n_nodes, 2),
-        dtype=torch.float64,
+        dtype=dtype,
         device=device,
     )
     grad_u_traj = torch.zeros(
         (n_steps, mesh.n_elements, 2, 2),
-        dtype=torch.float64,
+        dtype=dtype,
         device=device,
     )
     u_fixed = torch.zeros(
         (n_steps, *mesh.fixed_dofs.shape),
-        dtype=torch.float64,
+        dtype=dtype,
         device=device,
     )
     trac_traj = torch.zeros(
         (n_steps, len(mesh.right_nodes), 2),
-        dtype=torch.float64,
+        dtype=dtype,
         device=device,
     )
 
@@ -216,12 +211,12 @@ def generate_inertial_dataset(
         )
         f_ext_norm = torch.norm(F_ext).item()
 
-        print(
-            f"\n[Step {n + 1:02d}/{n_steps:02d}] Time: {t_n:.3f} s | ||F_ext||: {f_ext_norm:.4e} N"
-        )
-        print(separator)
-        print(header)
-        print(separator)
+        ##print(
+        #    f"\n[Step {n + 1:02d}/{n_steps:02d}] Time: {t_n:.3f} s | ||F_ext||: {f_ext_norm:.4e} N"
+        # )
+        # print(separator)
+        # print(header)
+        # print(separator)
 
         # Take previous step values (note, if n=0 then it will take the last time step, but it is all zeros so all it's fine, do not worry guys, all will work, I hope)
         u_prev = u_traj[n - 1].reshape(-1).to(device)
@@ -289,9 +284,9 @@ def generate_inertial_dataset(
             # Loggig
             du_abs = torch.norm(alpha * delta_u_free).item()
             du_rel = du_abs / (torch.norm(u[mesh.free_dofs]).item() + 1e-12)
-            print(
-                f"{nr_iter:>4d} | {rel_R:>10.3e} | {norm_R:>10.3e} | {du_rel:>10.3e} | {du_abs:>10.3e} | {alpha:>6.3f}"
-            )
+            # print(
+            #    f"{nr_iter:>4d} | {rel_R:>10.3e} | {norm_R:>10.3e} | {du_rel:>10.3e} | {du_abs:>10.3e} | {alpha:>6.3f}"
+            # )
             nr_iter += 1
 
             if nr_iter > 0:
@@ -314,11 +309,11 @@ def generate_inertial_dataset(
         grad_u_traj[n] = stencil_grad(u.view(-1, 2), mesh.elements, dN_dX)
         trac_traj[n] = trac_ext.unsqueeze(0).expand(len(mesh.right_nodes), 2)
 
-    u_t_traj_n = (u_t_traj - u_t_traj.min())/(u_t_traj.max() - u_t_traj.min())
-    u_tt_traj_n = (u_tt_traj - u_tt_traj.min())/(u_tt_traj.max() - u_tt_traj.min())
-    psi_traj_n = (psi_traj - psi_traj.min())/(psi_traj.max() - psi_traj.min())
-    trac_traj_n = (trac_traj - trac_traj.min())/(trac_traj.max() - trac_traj.min())
-    
+    # u_t_traj_n = (u_t_traj - u_t_traj.min()) / (u_t_traj.max() - u_t_traj.min())
+    # u_tt_traj_n = (u_tt_traj - u_tt_traj.min()) / (u_tt_traj.max() - u_tt_traj.min())
+    # psi_traj_n = (psi_traj - psi_traj.min()) / (psi_traj.max() - psi_traj.min())
+    # trac_traj_n = (trac_traj - trac_traj.min()) / (trac_traj.max() - trac_traj.min())
+
     dataset = {
         "time": t_eval.float().to(device),
         "nodes": mesh.nodes.to(device),
@@ -332,20 +327,14 @@ def generate_inertial_dataset(
         "top_nodes": mesh.top_nodes.to(device),
         "grad_u": grad_u_traj.to(device),
         ###
-        "u_t_complete": u_t_traj.to(device),
-        "u_t": u_t_traj_n.to(device),
-        "u_tt_complete": u_tt_traj.to(device),
-        "u_tt": u_tt_traj_n.to(device),
+        "u_t": u_t_traj.to(device),
+        "u_tt": u_tt_traj.to(device),
         ###
-        "u_fixed_complete": u_fixed.to(device),
         "u_fixed": u_fixed.to(device),
         ###
-        "u_complete": u_traj.to(device),
-        "u": (u_traj - u_traj.min())/(u_traj.max() - u_traj.min()),
-        "psi_complete": psi_traj.to(device),
-        "psi": psi_traj_n.to(device),
-        "trac_ext_complete": trac_traj.to(device),
-        "trac_ext": trac_traj_n.to(device),
+        "u": u_traj.to(device),
+        "psi": psi_traj.to(device),
+        "trac_ext": trac_traj.to(device),
     }
     torch.save(dataset, save_file)
     return dataset

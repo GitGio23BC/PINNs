@@ -12,7 +12,7 @@ from src.utils import init_logging, load_config
 
 
 def animate_ground_truth(
-    output_filename: str = "dataset_verification.mp4",
+    output_filename: str|None = None,
     fps: int = 20,
 ):
     init_logging()
@@ -23,7 +23,10 @@ def animate_ground_truth(
 
     # Dataset loading / generation
     data_dir = Path(cfg["data"]["data_dir"])
-    dataset_path = data_dir / cfg["data"]["dataset_name"]
+    data_name = cfg["data"]["dataset_name"]
+    dataset_path = data_dir / data_name
+    if output_filename is None:
+        output_filename = data_name+".gif"
 
     if not dataset_path.exists():
         print(f"Dataset not found at {dataset_path}. Generating now...")

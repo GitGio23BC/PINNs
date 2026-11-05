@@ -68,6 +68,18 @@ class MGNData:
         F_ext[:, self.mesh.right_nodes, 0] = trac_ext[:, :, 0] * self.mesh.right_lengths
         self.dataset["F_ext"] = F_ext
 
+    def get_trajectory(self):
+        return MGNBatch(
+            t=self.time.detach(),
+            dt=self.dt,
+            X_ref=self.dataset["nodes"].detach(),
+            u_exact=self.dataset["u"].detach(),
+            psi_exact=self.dataset["psi"].detach(),
+            u_fixed_exact=self.dataset["u_fixed"].detach(),
+            trac_ext=self.dataset["trac_ext"].detach(),
+            F_ext=self.dataset["F_ext"].detach(),
+        )
+
     def get_batch(self, step: int) -> MGNBatch:
 
         return MGNBatch(

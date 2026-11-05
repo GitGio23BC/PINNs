@@ -310,6 +310,7 @@ def test(model_path: Path | None = None):
 
     # Subplot 1: Training Convergence
     metrics_path = output_dir / f"metrics_{model_name}.csv"
+    losses = {"l_data":"red", "l_pako":"blue", "l_dirichlet":"green", "l_neumann":"magenta",}
     if metrics_path.exists():
         df = pd.read_csv(filepath_or_buffer=metrics_path)
         axes[0, 0].plot(
@@ -317,40 +318,16 @@ def test(model_path: Path | None = None):
             color="black",
             linestyle="-",
             label="Total Loss",
-            linewidth=1.5,
-        )
-        if "l_data" in df.columns:
-            axes[0, 0].plot(
-                df["l_data"],
-                color="red",
-                linestyle="--",
-                label="Data Loss",
-                alpha=0.7,
-            )
-        if "l_pako" in df.columns:
-            axes[0, 0].plot(
-                df["l_pako"],
-                color="blue",
-                linestyle="--",
-                label="Momentum Loss",
-                alpha=0.7,
-            )
-        if "l_dirichlet" in df.columns:
-            axes[0, 0].plot(
-                df["l_dirichlet"],
-                color="green",
-                linestyle=":",
-                label="Dirichlet Loss",
-                alpha=0.7,
-            )
-        if "l_neumann" in df.columns:
-            axes[0, 0].plot(
-                df["l_neumann"],
-                color="magenta",
-                linestyle=":",
-                label="Neumann Loss",
-                alpha=0.7,
-            )
+            linewidth=1.5,)
+        for metric_name, color in losses.items():
+            if metric_name in df.columns:
+                axes[0, 0].plot(
+                    df[metric_name],
+                    color=color,
+                    linestyle="--",
+                    label=metric_name.capitalize(),
+                    alpha=0.7,
+                )
         axes[0, 0].set_yscale("log")
         axes[0, 0].set_title("Training Loss Convergence")
         axes[0, 0].set_xlabel("Logged Step")

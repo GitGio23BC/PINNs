@@ -3,7 +3,7 @@ import torch
 from src.geometry.mesh import Mesh
 
 
-def compute_nodal_masses(mesh: Mesh, rho: float) -> torch.Tensor:
+def compute_nodal_masses(mesh: Mesh, rho: torch.Tensor) -> torch.Tensor:
     nodal_masses = torch.zeros(
         mesh.n_nodes,
         dtype=mesh.nodes.dtype,
@@ -45,18 +45,19 @@ def pako_residual_2D(
     mesh: Mesh,
     dN_dX: torch.Tensor,
     b: torch.Tensor,
-    rho: float,
+    rho: torch.Tensor,
     u_t: torch.Tensor,
     u_tt: torch.Tensor,
     alpha_rayleigh: float = 0.0,
+    beta_rayleigh: float = 0.0,
     F_ext: torch.Tensor | None = None,
 ) -> torch.Tensor:
     F_int = compute_internal_nodal_forces(P, mesh, dN_dX)
-    M_a = compute_nodal_masses(mesh, rho)  
+    M_a = compute_nodal_masses(mesh, rho)
 
     F_body = M_a * b.unsqueeze(0)
     F_inertia = M_a * u_tt
-    
+
     F_damp = alpha_rayleigh * M_a * u_t
 
     R = F_int + F_inertia + F_damp - F_body

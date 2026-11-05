@@ -6,7 +6,7 @@ output_dir: "./output"
 bulk: false
 
 data:
-  dataset_name: "debug_fast_gradino.pt"
+  dataset_name: "F_step_stiff.pt"
   data_dir: "./data/synt"
   batch_size: 1
   num_workers: 0
@@ -14,21 +14,21 @@ data:
 domain:
   x_range: [0.0, 1.0]
   y_range: [0.0, 1.0]
-  t_range: [0.0, 2.0]
+  t_range: [0.0, 1.0]
   nx: 5
   ny: 5
-  n_steps: 200
+  n_steps: 100
 
 # ==========================================
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "MGN_2D_step_acceleration"
+  model_name: "DEBUG_F_step_stiff"
   type: "standard"
   node_in_dim: 10
   edge_in_dim: 6     
-  latent_dim: 64
-  hidden_dim: 64
+  latent_dim: 8
+  hidden_dim: 8
   num_layers: 4
   output_dim: 2      
 
@@ -37,8 +37,9 @@ model:
 # ==========================================
 training:
   method: "base"
-  device: "cuda:0"
-  epochs: 500
+  device: "cpu"
+  epochs: 1000
+  warming_epochs: 100
   
   causal_annealing:
     eps_init: 1e-4
@@ -73,3 +74,5 @@ physics:
   rho_0: 1000.0
   body_force: [0.0, 0.0]
   sigma_max: 1.5e5
+  zeta: 0.9
+  w: [0.01, 1]
