@@ -2,30 +2,54 @@ import torch
 
 
 def mse(x_pred: torch.Tensor, x_gt: torch.Tensor, mean: bool = True) -> torch.Tensor:
-
     diff_sq = (x_pred - x_gt) ** 2
     return torch.mean(diff_sq) if mean else torch.sum(diff_sq)
 
-def data_loss(u_pred: torch.Tensor, u_exact: torch.Tensor, psi_pred: torch.Tensor, psi_exact: torch.Tensor) -> torch.Tensor:
-    l_u = mse(u_pred, u_exact)
-    l_psi = mse(psi_pred, psi_exact)
+
+def data_loss(
+    u_pred: torch.Tensor,
+    u_exact: torch.Tensor,
+    psi_pred: torch.Tensor,
+    psi_exact: torch.Tensor,
+    u_scale: torch.Tensor | float,
+    psi_scale: torch.Tensor | float,
+) -> torch.Tensor:
+    l_u = mse(u_pred, u_exact) / u_scale
+    l_psi = mse(psi_pred, psi_exact) / psi_scale
     return l_u + l_psi
 
-def dirichlet_loss(u_bc_pred: torch.Tensor) -> torch.Tensor:
-    return mse(u_bc_pred, torch.zeros_like(u_bc_pred))
 
-def neumann_loss(P: torch.Tensor, n_normal: torch.Tensor, F_ext: torch.Tensor) -> torch.Tensor:
-    scal= torch.sum(P * n_normal, dim=-1)
-    return mse(scal, F_ext)    
+def dirichlet_loss(
+    u_fixed_pred: torch.Tensor,
+    u_fixed_gt: torch.Tensor,
+) -> torch.Tensor:
+    return mse(u_fixed_pred, u_fixed_gt)
 
-def pako_loss(div_P: torch.Tensor, b: torch.Tensor, rho: float, u_tt: torch.Tensor) -> torch.Tensor:
-    residual= div_P - b - rho * u_tt
-    return mse(residual, torch.zeros_like(residual))
 
+def neumann_loss(
+    P_boundary: torch.Tensor,
+    n_normal: torch.Tensor,
+    trac_ext: torch.Tensor,
+    trac_scale: torch.Tensor | float,
+) -> torch.Tensor:
+    if trac_ext.shape[0] != P_boundary.shape[0]:
+        trac_ext_avg = 0.5 * (trac_ext[:-1] + trac_ext[1:])
+    else:
+        trac_ext_avg = trac_ext
+    t_pred = torch.einsum("eij, j -> ei", P_boundary, n_normal)
+    return mse(t_pred, trac_ext_avg) / trac_scale**2
+
+
+def pako_loss(
+    residual: torch.Tensor,
+    force_scale: torch.Tensor | float,
+    free_dofs: torch.Tensor,
+) -> torch.Tensor:
+    residual_free = residual.flatten()[free_dofs]
+    return torch.mean(residual_free**2) / force_scale
 
 
 def rl2e(x_pred: torch.Tensor, x_gt: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-
     error_norm = torch.linalg.norm((x_pred - x_gt).flatten(), ord=2)
     gt_norm = torch.linalg.norm(x_gt.flatten(), ord=2) + eps
     return error_norm / gt_norm

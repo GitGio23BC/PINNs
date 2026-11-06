@@ -1,4 +1,5 @@
 import csv
+from collections.abc import Iterable
 from pathlib import Path
 
 
@@ -14,7 +15,10 @@ class CSVLogger:
             writer = csv.DictWriter(f, fieldnames=self.fieldnames)
             writer.writeheader()
 
-    def log(self, metrics: dict):
+    def log(self, metrics: dict) -> None:
+        self.log_many([metrics])
+
+    def log_many(self, metrics: Iterable[dict]) -> None:
         with open(self.filepath, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.fieldnames)
-            writer.writerow(metrics)
+            writer.writerows(metrics)

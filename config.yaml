@@ -1,36 +1,12 @@
 # ==========================================
-# MODEL CONFIGURATION
+# EXPERIMENT & DATA
 # ==========================================
-model:
-  model_name: "MGN_time_nodes"
-  architecture: "MeshGraphNet"
-  type: "standard"
-  node_in_dim: 7
-  edge_in_dim: 6
-  latent_dim: 64
-  hidden_dim: 64
-  num_layers: 4
-  output_dim: 5
+seed: 42
+output_dir: "./output"
+bulk: false
 
-# ==========================================
-# TRAINING CONFIGURATION
-# ==========================================
-training:
-  method: "base"
-  device: "cpu"
-  epochs: 100
-  loss_weights:
-    lambda_data: 1.0
-    lambda_haslach: 10.0
-    lambda_momentum: 1
-    lambda_bc_base: 10.0
-    lambda_bc_tip: 100.0
-
-  # ==========================================
-# DATA & SPATIO-TEMPORAL DOMAIN
-# ==========================================
 data:
-  dataset_name: "inertial_dataset_sin.pt"
+  dataset_name: "F_step_stiff.pt"
   data_dir: "./data/synt"
   batch_size: 1
   num_workers: 0
@@ -38,54 +14,65 @@ data:
 domain:
   x_range: [0.0, 1.0]
   y_range: [0.0, 1.0]
-  t_range: [0.0, 2.0]
-  nx: 10
-  ny: 10
-  n_steps: 200
+  t_range: [0.0, 1.0]
+  nx: 5
+  ny: 5
+  n_steps: 100
 
+# ==========================================
+# MODEL CONFIGURATION
+# ==========================================
+model:
+  model_name: "DEBUG_F_step_stiff"
+  type: "standard"
+  node_in_dim: 10
+  edge_in_dim: 6     
+  latent_dim: 8
+  hidden_dim: 8
+  num_layers: 4
+  output_dim: 2      
+
+# ==========================================
+# TRAINING CONFIGURATION
+# ==========================================
+training:
+  method: "base"
+  device: "cpu"
+  epochs: 1000
+  warming_epochs: 100
+  
+  causal_annealing:
+    eps_init: 1e-4
+    eps_final: 10.0
+
+  loss_weights:
+    lambda_data: 1.0
+    lambda_dirichlet: 10.0
+    lambda_neumann: 100.0
+    lambda_pako: 10.0
+
+# ==========================================
+# OPTIMIZER
+# ==========================================
+optimizer:
+  name: "adam"
+  lr: 0.001
+  weight_decay: 0.0
 
 # ==========================================
 # GLOBAL PHYSICS CONSTANTS
 # ==========================================
 physics:
   equation: "ogden_compressible"
-  alphas = {
-    "CRVL": {
-        "alpha_1": -3543,
-        "alpha_2": 2723,
-        "alpha_3": 1308
-    },
-    "TA": {
-        "alpha_1": -3882,
-        "alpha_2": 2113,
-        "alpha_3": 1862
-    },
-    "FGT": {
-        "alpha_1": -22740.362,
-        "alpha_2": 12578.797,
-        "alpha_3": 10686.17
-    }
-  }
-  mus = {
-    "CRVL": {
-        "mu_1": 1,
-        "mu_2": -1,
-        "mu_3": 2
-    },
-    "TA": {
-        "mu_1": 1,
-        "mu_2": -1,
-        "mu_3": 2
-    },
-    "FGT": {
-        "mu_1": 1.911425,
-        "mu_2": 3.181289,
-        "mu_3": 19.23
-    }
-  }
- 
-  lambda: 6.0e5    
-  beta: 2.0 
-  rho_0: 1000.0 
+  tissue: "default"
+  alphas:
+    default: [1.3, 5.0, -2.0]
+  mus:
+    default: [6.3e5, 1.2e3, -1.0e4]
+  lam: 6.0e5
+  beta: 2.0
+  rho_0: 1000.0
   body_force: [0.0, 0.0]
   sigma_max: 1.5e5
+  zeta: 0.9
+  w: [0.01, 1]

@@ -159,7 +159,7 @@ class Decoder(nn.Module):
 class MeshGraphNet(nn.Module):
     def __init__(
         self,
-        node_in_dim: int = 6,
+        node_in_dim: int = 4,
         edge_in_dim: int = 6,
         latent_dim: int = 128,
         hidden_dim: int = 128,
@@ -188,8 +188,10 @@ class MeshGraphNet(nn.Module):
             activation=activation,
         )
 
-        self.mu = nn.Parameter(torch.rand(3), requires_grad=True)
-        self.alfa = nn.Parameter(torch.rand(3), requires_grad=True)
+        self.mus = nn.Parameter(torch.rand(3), requires_grad=True)
+        self.alfas = nn.Parameter(torch.rand(3), requires_grad=True)
+        self.beta = nn.Parameter(torch.rand(1), requires_grad=True)
+        self.lam = nn.Parameter(torch.rand(1), requires_grad=True)
 
     def forward(
         self,
