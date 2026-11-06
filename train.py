@@ -209,7 +209,6 @@ def train(overrides: dict | None = None, dtype = torch.float32) -> Path:
     ).to(device=device, dtype=dtype)
 
     ## Add Ansatz check (optional)
->>>>>>> a8ac6895ca9d332c901b9fa6ece7a7ffe2b36876
 
     optimizer = Adam(
         mgn.parameters(),
