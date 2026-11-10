@@ -9,7 +9,7 @@ def compute_nodal_masses(mesh: Mesh, rho: torch.Tensor) -> torch.Tensor:
         dtype=mesh.nodes.dtype,
         device=mesh.nodes.device,
     )
-    element_masses = rho * mesh.elements_area
+    element_masses = rho * mesh.elements_volume
     mass_per_corner = element_masses / 3.0
 
     for i in range(3):
@@ -23,29 +23,30 @@ def compute_internal_nodal_forces(
     mesh: Mesh,
     dN_dX: torch.Tensor,
 ) -> torch.Tensor:
-    f_int_local = torch.einsum("eij, eaj, e -> eai", P, dN_dX, mesh.elements_area)
+    f_int_local = torch.einsum("eij, eaj, e -> eai", P, dN_dX, mesh.elements_volume)
 
     F_int = torch.zeros(
-        (mesh.n_nodes, 2),
+        (mesh.n_nodes, 3),
         dtype=P.dtype,
         device=P.device,
     )
     for i in range(3):
         F_int.scatter_add_(
             0,
-            mesh.elements[:, i].unsqueeze(-1).expand(-1, 2),
+            mesh.elements[:, i].unsqueeze(-1).expand(-1, 3),
             f_int_local[:, i, :],
         )
 
     return F_int
 
 
-def pako_residual_2D(
+def pako_residual(
     P: torch.Tensor,
     mesh: Mesh,
     dN_dX: torch.Tensor,
     b: torch.Tensor,
     rho: torch.Tensor,
+    u: torch.Tensor,
     u_t: torch.Tensor,
     u_tt: torch.Tensor,
     alpha_rayleigh: float = 0.0,
@@ -59,6 +60,15 @@ def pako_residual_2D(
     F_inertia = M_a * u_tt
 
     F_damp = alpha_rayleigh * M_a * u_t
+    if beta_rayleigh != 0.0:
+        K_u_t = torch.autograd.grad(
+            outputs=F_int,
+            inputs=u,
+            grad_outputs=u_t,
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+        F_damp = F_damp + beta_rayleigh * K_u_t
 
     R = F_int + F_inertia + F_damp - F_body
 

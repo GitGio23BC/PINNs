@@ -1,10 +1,10 @@
 from .equations import Kinematics, Ogden
 from .operators import (
-    pako_residual_2D,
+    pako_residual,
 )
 
 __all__ = [
     "Kinematics",
     "Ogden",
-    "pako_residual_2D",
+    "pako_residual",
 ]

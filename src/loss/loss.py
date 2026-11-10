@@ -30,14 +30,13 @@ def neumann_loss(
     P_boundary: torch.Tensor,
     n_normal: torch.Tensor,
     trac_ext: torch.Tensor,
+    face_areas: torch.Tensor,
     trac_scale: torch.Tensor | float,
 ) -> torch.Tensor:
-    if trac_ext.shape[0] != P_boundary.shape[0]:
-        trac_ext_avg = 0.5 * (trac_ext[:-1] + trac_ext[1:])
-    else:
-        trac_ext_avg = trac_ext
-    t_pred = torch.einsum("eij, j -> ei", P_boundary, n_normal)
-    return mse(t_pred, trac_ext_avg) / trac_scale**2
+    t_pred = torch.einsum("fij,fj->fi", P_boundary, n_normal)
+    tot_area = face_areas.sum()
+    
+    return mse(t_pred, trac_ext) * (face_areas / tot_area * trac_scale) ** 2
 
 
 def pako_loss(

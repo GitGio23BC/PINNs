@@ -1,7 +1,6 @@
 import torch
 
 
-
 class Kinematics:
     def __init__(self, grad_u: torch.Tensor) -> None:
         self.grad_u = grad_u
@@ -11,12 +10,7 @@ class Kinematics:
 
         self.E = 0.5 * (self.F_base.mT @ self.F_base - self.I)
         self.C = 2.0 * self.E + self.I
-        det_C = (
-            self.C[..., 0, 0] * self.C[..., 1, 1]
-            - self.C[..., 0, 1] * self.C[..., 1, 0]
-        )
-        det_C_safe = 0.5 * (det_C + torch.sqrt(det_C**2 + 1e-8))
-        self.J = torch.sqrt(det_C_safe + 1e-8)
+        self.J = torch.linalg.det(self.F_base)
         self.F = self.F_base
 
     def compute_P(self, S: torch.Tensor) -> torch.Tensor:
@@ -55,27 +49,57 @@ class Ogden:
 
         return g, Jg_J, Jg_JJ
 
-    def get_principal_stretches(self, eps: float = 1e-12) -> torch.Tensor:
-        # Compute the eigenvalues using analytic formula
-        tr_C = self.kin.C[..., 0, 0] + self.kin.C[..., 1, 1]
-        det_C = (
-            self.kin.C[..., 0, 0] * self.kin.C[..., 1, 1]
-            - self.kin.C[..., 0, 1] * self.kin.C[..., 1, 0]
+    def get_principal_stretches(self, eps: float = 1e-6) -> torch.Tensor:
+        C = self.kin.C
+        trace_C = C.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+        trace_C_squared = (C @ C).diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+        invariant_2 = 0.5 * (trace_C.square() - trace_C_squared)
+        invariant_3 = torch.linalg.det(C)
+
+        p = invariant_2 - trace_C.square() / 3.0
+        q = -2.0 * trace_C.pow(3) / 27.0 + trace_C * invariant_2 / 3.0 - invariant_3
+
+        mean = trace_C / 3.0
+        scale = mean.abs().clamp_min(eps**0.5)
+        near_triple = -p <= eps * scale.square()
+
+        p_for_roots = torch.minimum(p, -eps * scale.square())
+        radius = torch.sqrt(-p_for_roots / 3.0)
+        cos_argument = -q / (2.0 * radius.pow(3))
+        safe_cos_argument = cos_argument.clamp(min=-1.0 + eps, max=1.0 - eps)
+        theta = torch.acos(safe_cos_argument) / 3.0
+        offsets = torch.arange(3, dtype=C.dtype, device=C.device) * (
+            2.0 * torch.pi / 3.0
         )
+        eigenvalues = mean.unsqueeze(-1) + 2.0 * radius.unsqueeze(-1) * torch.cos(
+            theta.unsqueeze(-1) - offsets
+        )
+        eigenvalues = eigenvalues.flip(dims=(-1,))
 
-        delta = torch.clamp((tr_C**2) - 4.0 * det_C, min=0.0)
-        sqrt_delta = torch.sqrt(delta + eps)
+        near_double = cos_argument.abs() >= 1.0 - eps
+        cube_root_arg = -0.5 * q
+        cube_root = cube_root_arg.sign() * cube_root_arg.abs().clamp_min(
+            torch.finfo(C.dtype).tiny
+        ).pow(1.0 / 3.0)
+        repeated = mean - cube_root
+        unique = mean + 2.0 * cube_root
+        double_eigenvalues = torch.stack(
+            [
+                torch.where(cube_root >= 0.0, repeated, unique),
+                repeated,
+                torch.where(cube_root >= 0.0, unique, repeated),
+            ],
+            dim=-1,
+        )
+        eigenvalues = torch.where(
+            near_double.unsqueeze(-1), double_eigenvalues, eigenvalues
+        )
+        eigenvalues = torch.where(
+            near_triple.unsqueeze(-1), mean.unsqueeze(-1), eigenvalues
+        )
+        return torch.sqrt(eigenvalues.clamp_min(eps))
 
-        eig_1 = 0.5 * (tr_C + sqrt_delta)
-        eig_2 = 0.5 * (tr_C - sqrt_delta)
-
-        lam_1 = torch.sqrt(torch.clamp(eig_1, min=1e-8))
-        lam_2 = torch.sqrt(torch.clamp(eig_2, min=1e-8))
-        lam_3 = torch.ones_like(lam_1)
-
-        return torch.stack([lam_1, lam_2, lam_3], dim=-1)
-
-    def get_2Dpsi(self) -> torch.Tensor:
+    def get_psi(self) -> torch.Tensor:
         lam_princ = self.get_principal_stretches()
 
         lam_pow = lam_princ.unsqueeze(-1) ** self.alphas
@@ -93,7 +117,7 @@ class Ogden:
         self,
     ) -> torch.Tensor:
         if self.psi is None:
-            self.get_2Dpsi()
+            self.get_psi()
 
         S = torch.autograd.grad(
             outputs=self.psi.sum(),  # type: ignore

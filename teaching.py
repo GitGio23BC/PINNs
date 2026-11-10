@@ -5,7 +5,7 @@ import torch
 from torch.optim import Adam
 from tqdm import tqdm
 
-from src.geometry import Mesh, create_graph, create_mesh
+from src.geometry import Mesh, create_graph, create_mesh_3D
 from src.loader import (
     BodyState,
     LossScales,
@@ -16,7 +16,7 @@ from src.loader import (
 from src.loss import data_loss, dirichlet_loss, neumann_loss, pako_loss
 from src.loss.loss import mse
 from src.models import MeshGraphNet
-from src.physics import Kinematics, Ogden, pako_residual_2D
+from src.physics import Kinematics, Ogden, pako_residual
 from src.plot import animate_deformation
 from src.utils import (
     CSVLogger,
@@ -25,7 +25,7 @@ from src.utils import (
     load_config,
     set_seed,
     stencil_grad,
-    triangle_shape_gradients,
+    tetrahedral_shape_gradients,
 )
 from test import test
 
@@ -75,7 +75,7 @@ def compute_step_loss(
     )
 
     # Pako loss
-    R = pako_residual_2D(
+    R = pako_residual(
         mesh=mesh,
         P=state.P,
         dN_dX=dN_dX,
@@ -160,7 +160,7 @@ def train(overrides: dict | None = None, dtype=torch.float64) -> Path:
     y_min, y_max = cfg["domain"]["y_range"]
     nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
 
-    mesh = create_mesh(
+    mesh = create_mesh_3D(
         width=float(x_max - x_min),
         height=float(y_max - y_min),
         nx=nx,
@@ -170,7 +170,7 @@ def train(overrides: dict | None = None, dtype=torch.float64) -> Path:
     )
 
     # Element shape gradients
-    dN_dX, _ = triangle_shape_gradients(mesh.nodes, mesh.elements)
+    dN_dX, _ = tetrahedral_shape_gradients(mesh.nodes, mesh.elements)
 
     # Data
     data_dir = Path(cfg["data"]["data_dir"])
@@ -365,7 +365,7 @@ def train(overrides: dict | None = None, dtype=torch.float64) -> Path:
             grad_u = stencil_grad(u, mesh.elements, dN_dX)
             kin = Kinematics(grad_u)
             ogden = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin)
-            psi = ogden.get_2Dpsi()
+            psi = ogden.get_psi()
             S = ogden.get_S()
             P = kin.compute_P(S)
 

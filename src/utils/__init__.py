@@ -4,7 +4,7 @@ from .reproducibility import set_seed
 from .tensor_tools import (
     check_tensor,
     stencil_grad,
-    triangle_shape_gradients,
+    tetrahedral_shape_gradients,
     voigt_tensor,
     voigt_to_tensor,
 )
@@ -17,7 +17,7 @@ __all__ = [
     "load_config",
     "set_seed",
     "stencil_grad",
-    "triangle_shape_gradients",
+    "tetrahedral_shape_gradients",
     "voigt_tensor",
     "voigt_to_tensor",
 ]

@@ -62,10 +62,17 @@ class MGNData:
 
         trac_ext = self.dataset["trac_ext"]
 
-        N = trac_ext.shape[0]
+        right_nodes = mesh.get_boundary_nodes("right")
+        right_nodal_areas = mesh.get_boundary_nodal_areas("right")[right_nodes]
 
-        F_ext = torch.zeros((N, self.mesh.n_nodes, 2), dtype=dtype, device=device)
-        F_ext[:, self.mesh.right_nodes, 0] = trac_ext[:, :, 0] * self.mesh.right_lengths
+        F_ext = torch.zeros(
+            (trac_ext.shape[0], mesh.n_nodes, 3),
+            dtype=dtype,
+            device=device,
+        )
+        F_ext[:, right_nodes, :] = (
+            trac_ext[:, None, :] * right_nodal_areas[None, :, None]
+        )
         self.dataset["F_ext"] = F_ext
 
     def get_trajectory(self):
