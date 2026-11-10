@@ -8,15 +8,15 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.geometry import create_graph, create_mesh
+from src.geometry import create_graph, create_mesh_3D
 from src.loader import BodyState, MGNData, generate_inertial_dataset
 from src.models import MeshGraphNet
 from src.physics import Kinematics
 from src.physics.equations import Ogden
-from src.physics.operators import pako_residual_2D
+from src.physics.operators import pako_residual
 from src.plot import animate_deformation
 from src.utils import init_logging, load_config
-from src.utils.tensor_tools import stencil_grad, triangle_shape_gradients
+from src.utils.tensor_tools import stencil_grad, tetrahedral_shape_gradients
 
 
 def test(model_path: Path | None = None):
@@ -26,15 +26,10 @@ def test(model_path: Path | None = None):
 
     cfg = load_config(config_path="config.yaml")
     requested_device = cfg["training"]["device"]
-    if requested_device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError(
-            "È stata richiesta una GPU CUDA per il test, ma PyTorch non la rileva."
-        )
     device = torch.device(requested_device)
     dtype = torch.float32
-    output_dir = (
-        Path(cfg["output_dir"] if "output_dir" in cfg else "./output")
-        / cfg["model"]["model_name"]
+    output_dir = Path(cfg.get("output_dir", "./output")) / str(
+        cfg["model"]["model_name"]
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -50,7 +45,7 @@ def test(model_path: Path | None = None):
     y_min, y_max = cfg["domain"]["y_range"]
     nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
 
-    mesh = create_mesh(
+    mesh = create_mesh_3D(
         width=float(x_max - x_min),
         height=float(y_max - y_min),
         nx=nx,
@@ -59,22 +54,19 @@ def test(model_path: Path | None = None):
         dtype=dtype,
     )
 
-    dN_dX, _ = triangle_shape_gradients(nodes=mesh.nodes, elements=mesh.elements)
+    dN_dX, _ = tetrahedral_shape_gradients(nodes=mesh.nodes, elements=mesh.elements)
 
-    raw_node_type = torch.zeros(
-        size=(mesh.n_nodes,),
-        dtype=torch.long,
-        device=device,
-    )
-    raw_node_type[mesh.top_nodes] = 3
-    raw_node_type[mesh.bottom_nodes] = 3
-    raw_node_type[mesh.right_nodes] = 2
-    raw_node_type[mesh.left_nodes] = 1
-    node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
+    raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
+    for node_type_idx, border_nodes in enumerate(mesh.get_boundary_faces()):
+        raw_node_type[border_nodes] = node_type_idx
+
+    node_type = torch.nn.functional.one_hot(
+        raw_node_type, num_classes=len(mesh.get_boundary_faces())
+    ).float()
 
     # Data
     data_dir = Path(cfg["data"]["data_dir"])
-    dataset_path = data_dir / cfg["data"]["dataset_name"]
+    dataset_path = data_dir / str(cfg["data"]["dataset_name"])
 
     if not dataset_path.exists():
         dataset = generate_inertial_dataset(cfg=cfg, device=device, dtype=dtype)
@@ -103,13 +95,15 @@ def test(model_path: Path | None = None):
     time_steps = data_loader.num_steps
     dt = data_loader.dt
     time_grid = data_loader.time
-    traction_scale = float(cfg["physics"]["sigma_max"])
+    trac_scale = float(cfg["physics"]["sigma_max"])
     force_reference = torch.zeros(
         size=(mesh.n_nodes, 2),
         dtype=dtype,
         device=device,
     )
-    force_reference[mesh.right_nodes, 0] = traction_scale * mesh.right_lengths
+    force_reference[mesh.get_boundary_faces("right"), 0] = (
+        trac_scale * mesh.get_boundary_areas("right")
+    )
     force_scale_free = torch.mean(
         input=force_reference.reshape(-1)[mesh.free_dofs] ** 2
     ).clamp_min(1e-8)
@@ -161,7 +155,7 @@ def test(model_path: Path | None = None):
     zeta = 0.03
     w_max, w_min = 1.0, 0.01
     alpha_rayleigh = 2.0 * zeta * (w_max + w_min)
-    beta_rayleigh = 0.0
+    beta_rayleigh = 2.0 * zeta * (w_max * w_min) / (w_max + w_min)
 
     # Rollout Initialisation
     u_prev = torch.zeros(size=(mesh.n_nodes, 2), dtype=dtype, device=device)
@@ -180,14 +174,15 @@ def test(model_path: Path | None = None):
     E11_gt_traj = []
     S11_gt_traj = []
 
-    right_elems = mesh.right_elements
+    right_elems = mesh.elements
 
     # Rollout Testing
     logger.info("Starting PINN test rollout...")
     for t_step in range(time_steps):
-        batch = data_loader.get_batch(step=t_step)
-        trac_feat = torch.zeros(size=(mesh.n_nodes, 2), device=device, dtype=dtype)
-        trac_feat[mesh.right_nodes] = batch.trac_ext / traction_scale
+        batch = data_loader.get_batch(t_step)
+        trac_feat = torch.zeros((mesh.n_nodes, 3), device=device, dtype=dtype)
+        trac_feat[mesh.get_boundary_nodes("right")] = batch.trac_ext / trac_scale
+        velocity_feat = velocity_prev
 
         graph = create_graph(
             mesh=mesh,
@@ -212,7 +207,7 @@ def test(model_path: Path | None = None):
             grad_u = stencil_grad(y=u, elements=mesh.elements, dN_dX=dN_dX)
             kin = Kinematics(grad_u=grad_u)
             ogden = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin)
-            psi = ogden.get_2Dpsi()
+            psi = ogden.get_psi()
             S = ogden.get_S()
             P = kin.compute_P(S=S)
 
@@ -227,12 +222,13 @@ def test(model_path: Path | None = None):
             )
 
             # Momentum Residual
-            R_pako = pako_residual_2D(
+            R_pako = pako_residual(
                 P=state.P,
                 mesh=mesh,
                 dN_dX=dN_dX,
                 b=state.b,
                 rho=state.rho,
+                u=state.u,
                 u_t=state.u_t,
                 u_tt=state.u_tt,
                 alpha_rayleigh=alpha_rayleigh,
@@ -252,7 +248,7 @@ def test(model_path: Path | None = None):
             ogden_exact = Ogden(
                 mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin_exact
             )
-            ogden_exact.get_2Dpsi()
+            ogden_exact.get_psi()
             S_exact = ogden_exact.get_S()
 
         e11_pred = kin.E[right_elems, 0, 0].mean().item()
@@ -310,7 +306,12 @@ def test(model_path: Path | None = None):
 
     # Subplot 1: Training Convergence
     metrics_path = output_dir / f"metrics_{model_name}.csv"
-    losses = {"l_data":"red", "l_pako":"blue", "l_dirichlet":"green", "l_neumann":"magenta",}
+    losses = {
+        "l_data": "red",
+        "l_pako": "blue",
+        "l_dirichlet": "green",
+        "l_neumann": "magenta",
+    }
     if metrics_path.exists():
         df = pd.read_csv(filepath_or_buffer=metrics_path)
         axes[0, 0].plot(
@@ -318,7 +319,8 @@ def test(model_path: Path | None = None):
             color="black",
             linestyle="-",
             label="Total Loss",
-            linewidth=1.5,)
+            linewidth=1.5,
+        )
         for metric_name, color in losses.items():
             if metric_name in df.columns:
                 axes[0, 0].plot(
@@ -464,7 +466,7 @@ def test(model_path: Path | None = None):
 if __name__ == "__main__":
     cfg = load_config()
     out_dir = Path(cfg["output_dir"])
-    if "bulk" in cfg and cfg["bulk"]:
+    if cfg.get("bulk"):
         pt_files = [p for p in out_dir.glob("*.pt") if "checkpoints" not in str(p)]
         for model_file in pt_files:
             test(model_path=model_file)

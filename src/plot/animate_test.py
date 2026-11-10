@@ -8,7 +8,7 @@ import torch
 from matplotlib import animation
 from matplotlib.animation import FFMpegWriter, PillowWriter
 
-from src.geometry import create_graph, create_mesh
+from src.geometry import create_graph, create_mesh_3D
 from src.loader import generate_inertial_dataset
 from src.models import MeshGraphNet
 from src.utils import init_logging, load_config
@@ -25,7 +25,7 @@ def rollout_trajectory(
     device: torch.device,
 ) -> np.ndarray:
     model.eval()
-    u_prev = torch.zeros((mesh.n_nodes, 2), dtype=torch.float32, device=device)
+    u_prev = torch.zeros((mesh.n_nodes, 3), dtype=torch.float32, device=device)
     u_prev2 = torch.zeros_like(u_prev)
     dt = float((time_grid[-1] - time_grid[0]) / max(time_steps - 1, 1))
     velocity_prev = torch.zeros_like(u_prev)
@@ -36,8 +36,8 @@ def rollout_trajectory(
 
     with torch.no_grad():
         for t_n in range(time_steps):
-            trac_feat = torch.zeros((mesh.n_nodes, 2), device=device, dtype=torch.float32)
-            trac_feat[mesh.right_nodes] =traction_trajectory[t_n] / traction_scale
+            trac_feat = torch.zeros((mesh.n_nodes, 3), device=device, dtype=torch.float32)
+            trac_feat[mesh.boundary_nodes["right"]] =traction_trajectory[t_n] / traction_scale
             graph = create_graph(
                 mesh=mesh,
                 world_pos=world_pos,
@@ -87,7 +87,7 @@ def animate_deformation(
     y_min, y_max = cfg["domain"]["y_range"]
     nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
 
-    mesh = create_mesh(
+    mesh = create_mesh_3D(
         width=float(x_max - x_min),
         height=float(y_max - y_min),
         nx=nx,
@@ -96,10 +96,10 @@ def animate_deformation(
     )
 
     raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
-    raw_node_type[mesh.top_nodes] = 3
-    raw_node_type[mesh.bottom_nodes] = 3
-    raw_node_type[mesh.right_nodes] = 2
-    raw_node_type[mesh.left_nodes] = 1
+    raw_node_type[mesh.boundary_nodes["top"]] = 3
+    raw_node_type[mesh.boundary_nodes["bottom"]] = 3
+    raw_node_type[mesh.boundary_nodes["right"]] = 2
+    raw_node_type[mesh.boundary_nodes["left"]] = 1
     node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
 
     # Data
@@ -127,8 +127,8 @@ def animate_deformation(
     F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float32)
 
     trac_traj = dataset["trac_ext"].cpu().numpy()
-    right_nodes = mesh.right_nodes.cpu().numpy()
-    right_lengths = mesh.right_lengths.cpu().numpy()
+    right_nodes = mesh.boundary_nodes["right"].cpu().numpy()
+    right_lengths = mesh.get_boundary_areas("right").cpu().numpy()
 
     if trac_traj.ndim == 3:
         F_ext_traj[:, right_nodes, :] = trac_traj * right_lengths[None, :, None]

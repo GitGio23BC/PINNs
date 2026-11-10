@@ -50,7 +50,7 @@ def stress_strain_curve(
 
     # Stress evaluation
     ogden = Ogden(mus, alphas, beta, lam, kin)
-    ogden.get_2Dpsi()
+    ogden.get_psi()
     S = ogden.get_S()  
 
     E_avg = E.mean(dim=1).detach().cpu()

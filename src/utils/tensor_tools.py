@@ -83,46 +83,30 @@ def voigt_to_tensor(
     return x
 
 
-def triangle_shape_gradients(
+def tetrahedral_shape_gradients(
     nodes: torch.Tensor, elements: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    p0 = nodes[elements[:, 0]]
+    p1 = nodes[elements[:, 1]]
+    p2 = nodes[elements[:, 2]]
+    p3 = nodes[elements[:, 3]]
 
-    elem_coords = nodes[elements]
-    x = elem_coords[:, :, 0]
-    y = elem_coords[:, :, 1]
+    e1 = p1 - p0
+    e2 = p2 - p0
+    e3 = p3 - p0
 
-    # A = det(x-y)/2
-    two_area = (
-        x[:, 0] * (y[:, 1] - y[:, 2])
-        + x[:, 1] * (y[:, 2] - y[:, 0])
-        + x[:, 2] * (y[:, 0] - y[:, 1])
-    )
+    J = torch.stack((e1, e2, e3), dim=-1)  
+    invJ = torch.linalg.inv(J)
 
-    areas = 0.5 * two_area
+    grad123 = invJ 
 
-    # x stencil derivatives dN_I / dX
-    b = torch.stack(
-        [
-            y[:, 1] - y[:, 2],
-            y[:, 2] - y[:, 0],
-            y[:, 0] - y[:, 1],
-        ],
-        dim=1,
-    ) / two_area.unsqueeze(1)
+    grad0 = -grad123.sum(dim=1, keepdim=True)
+    dN_dX = torch.cat((grad0, grad123), dim=1)  
 
-    # y stencil derivatives dN_I / dY
-    c = torch.stack(
-        [
-            x[:, 2] - x[:, 1],
-            x[:, 0] - x[:, 2],
-            x[:, 1] - x[:, 0],
-        ],
-        dim=1,
-    ) / two_area.unsqueeze(1)
+    volumes = torch.abs(torch.linalg.det(torch.stack([e1, e2, e3], dim=1))) / 6.0
 
-    dN_dX = torch.stack([b, c], dim=-1)
 
-    return dN_dX, areas
+    return dN_dX, volumes
 
 
 def stencil_grad(
