@@ -7,16 +7,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from mpl_toolkits.mplot3d import Axes3D  # Necessario per i plot 3D
 
 from src.geometry import create_graph, create_mesh_3D
 from src.loader import BodyState, MGNData, generate_inertial_dataset
 from src.models import MeshGraphNet
-from src.physics import Kinematics
-from src.physics.equations import Ogden
-from src.physics.operators import pako_residual
+from src.physics import Kinematics, Ogden, pako_residual
 from src.plot import animate_deformation
-from src.utils import init_logging, load_config
-from src.utils.tensor_tools import stencil_grad, tetrahedral_shape_gradients
+from src.utils import init_logging, load_config, stencil_grad, tetrahedral_shape_gradients
 
 
 def test(model_path: Path | None = None):
@@ -25,12 +23,10 @@ def test(model_path: Path | None = None):
     logger = logging.getLogger(name=__name__)
 
     cfg = load_config(config_path="config.yaml")
-    requested_device = cfg["training"]["device"]
+    requested_device = cfg["training"].get("device", "cuda")
     device = torch.device(requested_device)
     dtype = torch.float32
-    output_dir = Path(cfg.get("output_dir", "./output")) / str(
-        cfg["model"]["model_name"]
-    )
+    output_dir = Path(cfg.get("output_dir", "./output")) / str(cfg["model"]["model_name"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model_file = (
@@ -40,36 +36,41 @@ def test(model_path: Path | None = None):
     )
     model_name = model_file.stem
 
-    # Mesh
+    # Mesh 3D Alignment
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
-    nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
+    z_min, z_max = cfg["domain"]["z_range"]
+    nx, ny, nz = (
+        int(cfg["domain"]["nx"]),
+        int(cfg["domain"]["ny"]),
+        int(cfg["domain"]["nz"]),
+    )
 
     mesh = create_mesh_3D(
         width=float(x_max - x_min),
         height=float(y_max - y_min),
+        depth=float(z_max - z_min),
         nx=nx,
         ny=ny,
+        nz=nz,
         device=device,
         dtype=dtype,
     )
 
     dN_dX, _ = tetrahedral_shape_gradients(nodes=mesh.nodes, elements=mesh.elements)
 
-    raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
-    for node_type_idx, border_nodes in enumerate(mesh.get_boundary_faces()):
-        raw_node_type[border_nodes] = node_type_idx
+    # Node Type Encoding allineato a train.py
+    directions = ('left', 'right', 'bottom', 'top', 'back', 'front')
+    node_type = torch.zeros((mesh.n_nodes, len(directions)), dtype=dtype, device=device)
+    for i, direction in enumerate(directions):
+        node_type[mesh.get_boundary_nodes(direction), i] = 1.0
 
-    node_type = torch.nn.functional.one_hot(
-        raw_node_type, num_classes=len(mesh.get_boundary_faces())
-    ).float()
-
-    # Data
+    # Data Loader
     data_dir = Path(cfg["data"]["data_dir"])
     dataset_path = data_dir / str(cfg["data"]["dataset_name"])
 
     if not dataset_path.exists():
-        dataset = generate_inertial_dataset(cfg=cfg, device=device, dtype=dtype)
+        dataset = generate_inertial_dataset(cfg=cfg, device=device)
     else:
         dataset = torch.load(
             f=dataset_path,
@@ -95,35 +96,12 @@ def test(model_path: Path | None = None):
     time_steps = data_loader.num_steps
     dt = data_loader.dt
     time_grid = data_loader.time
+    
+    # Scaling
     trac_scale = float(cfg["physics"]["sigma_max"])
-    force_reference = torch.zeros(
-        size=(mesh.n_nodes, 2),
-        dtype=dtype,
-        device=device,
-    )
-    force_reference[mesh.get_boundary_faces("right"), 0] = (
-        trac_scale * mesh.get_boundary_areas("right")
-    )
-    force_scale_free = torch.mean(
-        input=force_reference.reshape(-1)[mesh.free_dofs] ** 2
-    ).clamp_min(1e-8)
-    nonzero_force = force_reference.reshape(-1)[mesh.free_dofs].abs() > 0
-    force_scale_nonzero = torch.mean(
-        input=force_reference.reshape(-1)[mesh.free_dofs][nonzero_force] ** 2
-    ).clamp_min(1e-8)
-    logger.info(
-        f"PAKO force scales: free_mean_sq={force_scale_free.item():.6e}, "
-        f"nonzero_mean_sq={force_scale_nonzero.item():.6e}, "
-        f"free_dofs={mesh.free_dofs.numel()}, "
-        f"nonzero_force_dofs={nonzero_force.sum().item()}",
-    )
 
-    # Model
-    checkpoint = torch.load(
-        f=model_file,
-        map_location=device,
-        weights_only=False,
-    )
+    # Model definition & loading
+    checkpoint = torch.load(f=model_file, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     model_cfg = cfg["model"]
     mgn = MeshGraphNet(
@@ -138,27 +116,24 @@ def test(model_path: Path | None = None):
     mgn.eval()
     logger.info(f"Loaded trained MeshGraphNet model from {model_file}")
 
-    # Physics Constants
+    # Physics Constants allineati a train.py
     p_cfg = cfg["physics"]
     tissue = p_cfg["tissue"]
-    alphas = torch.tensor(
-        data=p_cfg["alphas"][tissue],
-        device=device,
-        dtype=dtype,
-    )
+    alphas = torch.tensor(data=p_cfg["alphas"][tissue], device=device, dtype=dtype)
     mus_list = [float(mu) for mu in p_cfg["mus"][tissue]]
     mus = torch.tensor(data=mus_list, device=device, dtype=dtype)
     lam = float(p_cfg["lam"])
     beta = float(p_cfg["beta"])
     b = torch.tensor(data=p_cfg["body_force"], device=device, dtype=dtype)
     rho = torch.tensor(data=[p_cfg["rho_0"]], device=device, dtype=dtype)
-    zeta = 0.03
-    w_max, w_min = 1.0, 0.01
+    
+    zeta = float(p_cfg["zeta"])
+    w_min, w_max = [float(w) for w in p_cfg["w"]]
     alpha_rayleigh = 2.0 * zeta * (w_max + w_min)
     beta_rayleigh = 2.0 * zeta * (w_max * w_min) / (w_max + w_min)
 
-    # Rollout Initialisation
-    u_prev = torch.zeros(size=(mesh.n_nodes, 2), dtype=dtype, device=device)
+    # Rollout Initialisation (3D = 3 components)
+    u_prev = torch.zeros(size=(mesh.n_nodes, 3), dtype=dtype, device=device)
     u_prev2 = torch.zeros_like(input=u_prev)
     velocity_prev = torch.zeros_like(input=u_prev)
     acceleration_prev = torch.zeros_like(input=u_prev)
@@ -174,7 +149,7 @@ def test(model_path: Path | None = None):
     E11_gt_traj = []
     S11_gt_traj = []
 
-    right_elems = mesh.elements
+    eval_elems = mesh.elements
 
     # Rollout Testing
     logger.info("Starting PINN test rollout...")
@@ -182,7 +157,6 @@ def test(model_path: Path | None = None):
         batch = data_loader.get_batch(t_step)
         trac_feat = torch.zeros((mesh.n_nodes, 3), device=device, dtype=dtype)
         trac_feat[mesh.get_boundary_nodes("right")] = batch.trac_ext / trac_scale
-        velocity_feat = velocity_prev
 
         graph = create_graph(
             mesh=mesh,
@@ -196,20 +170,20 @@ def test(model_path: Path | None = None):
         )
 
         with torch.enable_grad():
-            u = mgn(graph=graph).to(dtype=dtype)
+            u = mgn(graph).to(dtype=dtype)
             u.requires_grad_(True)
 
-            # Acceleration & External Force
+            # Acceleration & Velocity
             u_t = (u - u_prev) / dt
             u_tt = (u - 2.0 * u_prev + u_prev2) / (dt**2)
 
             # Kinematics & Stress (Prediction)
-            grad_u = stencil_grad(y=u, elements=mesh.elements, dN_dX=dN_dX)
-            kin = Kinematics(grad_u=grad_u)
+            grad_u = stencil_grad(u, mesh.elements, dN_dX)
+            kin = Kinematics(grad_u)
             ogden = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin)
             psi = ogden.get_psi()
             S = ogden.get_S()
-            P = kin.compute_P(S=S)
+            P = kin.compute_P(S)
 
             state = BodyState(
                 b=b,
@@ -236,25 +210,20 @@ def test(model_path: Path | None = None):
                 F_ext=batch.F_ext,
             )
 
-            # Kinematics & Stress (Refernce)
+            # Kinematics & Stress (Reference)
             u_exact = batch.u_exact.to(device=device, dtype=dtype).detach().clone()
             u_exact.requires_grad_(True)
-            grad_u_exact = stencil_grad(
-                y=u_exact,
-                elements=mesh.elements,
-                dN_dX=dN_dX,
-            )
+            grad_u_exact = stencil_grad(u_exact, mesh.elements, dN_dX)
             kin_exact = Kinematics(grad_u=grad_u_exact)
-            ogden_exact = Ogden(
-                mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin_exact
-            )
+            ogden_exact = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin_exact)
             ogden_exact.get_psi()
             S_exact = ogden_exact.get_S()
 
-        e11_pred = kin.E[right_elems, 0, 0].mean().item()
-        s11_pred = S[right_elems, 0, 0].mean().item()
-        e11_gt = kin_exact.E[right_elems, 0, 0].mean().item()
-        s11_gt = S_exact[right_elems, 0, 0].mean().item()
+        # Track E11 and S11 for stress-strain curves
+        e11_pred = kin.E[eval_elems, 0, 0].mean().item()
+        s11_pred = S[eval_elems, 0, 0].mean().item()
+        e11_gt = kin_exact.E[eval_elems, 0, 0].mean().item()
+        s11_gt = S_exact[eval_elems, 0, 0].mean().item()
 
         E11_pred_traj.append(e11_pred)
         S11_pred_traj.append(s11_pred)
@@ -265,6 +234,7 @@ def test(model_path: Path | None = None):
         all_S_pred.append(S.detach().cpu())
         all_pako_res.append(R_pako.reshape(-1)[mesh.free_dofs].detach().cpu())
 
+        # Update Variables
         u_prev2 = u_prev.detach().clone()
         u_prev = u.detach().clone()
         velocity_prev = ((u_prev - u_prev2) / dt).detach()
@@ -277,18 +247,17 @@ def test(model_path: Path | None = None):
         .detach()
         .cpu()
     )
-    reference_norm = torch.linalg.norm(input=reference_trajectory.flatten()).clamp_min(
-        1e-8
-    )
+    reference_norm = torch.linalg.norm(input=reference_trajectory.flatten()).clamp_min(1e-8)
+    
     l2_err_traj = [
-        torch.linalg.norm(input=u_pred - reference_trajectory[t])
-        .div(reference_norm)
-        .item()
+        torch.linalg.norm(input=u_pred - reference_trajectory[t]).div(reference_norm).item()
         for t, u_pred in enumerate(all_u_pred)
     ]
     final_l2_error = l2_err_traj[-1]
-    mean_pako = torch.cat(tensors=all_pako_res).abs().mean().item()
+    
     residual_free = torch.cat(tensors=all_pako_res)
+    mean_pako = residual_free.abs().mean().item()
+    
     logger.info("=" * 60)
     logger.info(f"Evaluation Results for: {model_file.name}")
     logger.info(f"Final Relative L2 Displacement Error: {final_l2_error:.2%}")
@@ -315,20 +284,12 @@ def test(model_path: Path | None = None):
     if metrics_path.exists():
         df = pd.read_csv(filepath_or_buffer=metrics_path)
         axes[0, 0].plot(
-            df["l_step"],
-            color="black",
-            linestyle="-",
-            label="Total Loss",
-            linewidth=1.5,
+            df["l_step"], color="black", linestyle="-", label="Total Loss", linewidth=1.5
         )
         for metric_name, color in losses.items():
             if metric_name in df.columns:
                 axes[0, 0].plot(
-                    df[metric_name],
-                    color=color,
-                    linestyle="--",
-                    label=metric_name.capitalize(),
-                    alpha=0.7,
+                    df[metric_name], color=color, linestyle="--", label=metric_name.capitalize(), alpha=0.7
                 )
         axes[0, 0].set_yscale("log")
         axes[0, 0].set_title("Training Loss Convergence")
@@ -337,54 +298,35 @@ def test(model_path: Path | None = None):
         axes[0, 0].legend()
         axes[0, 0].grid(True, which="both", ls="--", alpha=0.3)
     else:
-        axes[0, 0].text(
-            x=0.5,
-            y=0.5,
-            s="metrics.csv not found",
-            ha="center",
-            va="center",
-        )
+        axes[0, 0].text(0.5, 0.5, "metrics.csv not found", ha="center", va="center")
 
-    # Subplot 2: Deformed Mesh State t_final
+    # Subplot 2: Deformed Mesh State t_final (MODIFICATO PER IL 3D)
+    axes[0, 1].remove()  # Rimuovi l'asse 2D
+    ax3d = fig.add_subplot(2, 3, 2, projection='3d') # Aggiungi l'asse 3D
+    
     x_nodes_np = mesh.nodes.cpu().numpy()
     u_final_np = all_u_pred[-1].numpy()
-    u_mag = np.linalg.norm(x=u_final_np, axis=-1)
+    u_mag = np.linalg.norm(u_final_np, axis=-1)
 
-    sc = axes[0, 1].scatter(
-        x=x_nodes_np[:, 0] + u_final_np[:, 0],
-        y=x_nodes_np[:, 1] + u_final_np[:, 1],
-        c=u_mag,
-        cmap="viridis",
-        s=40,
-    )
-    plt.colorbar(
-        mappable=sc,
-        ax=axes[0, 1],
-        label=r"$\|\mathbf{u}\|$ Magnitude [m]",
-    )
-    axes[0, 1].scatter(
-        x=x_nodes_np[:, 0],
-        y=x_nodes_np[:, 1],
-        c="gray",
-        alpha=0.3,
-        s=15,
-        label="Reference",
-    )
-    axes[0, 1].set_title("Final Deformed State ($t = T$)")
-    axes[0, 1].set_xlabel("X [m]")
-    axes[0, 1].set_ylabel("Y [m]")
-    axes[0, 1].legend()
-    axes[0, 1].grid(True, alpha=0.3)
+    def_x = x_nodes_np[:, 0] + u_final_np[:, 0]
+    def_y = x_nodes_np[:, 1] + u_final_np[:, 1]
+    def_z = x_nodes_np[:, 2] + u_final_np[:, 2]
+
+    sc = ax3d.scatter(def_x, def_y, def_z, c=u_mag, cmap="viridis", s=15, alpha=0.8)
+    plt.colorbar(mappable=sc, ax=ax3d, label=r"$\|\mathbf{u}\|$ Magnitude [m]", pad=0.1)
+    
+    # Reference in grigio
+    ax3d.scatter(x_nodes_np[:, 0], x_nodes_np[:, 1], x_nodes_np[:, 2], c="gray", alpha=0.1, s=5, label="Reference")
+    
+    ax3d.set_title("Final Deformed State 3D ($t = T$)")
+    ax3d.set_xlabel("X [m]")
+    ax3d.set_ylabel("Y [m]")
+    ax3d.set_zlabel("Z [m]")
+    ax3d.legend()
 
     # Subplot 3: Momentum Residual Norm
     res_free = residual_free.numpy()
-    axes[0, 2].hist(
-        x=res_free,
-        bins=30,
-        color="crimson",
-        alpha=0.7,
-        edgecolor="black",
-    )
+    axes[0, 2].hist(res_free, bins=30, color="crimson", alpha=0.7, edgecolor="black")
     axes[0, 2].set_yscale("log")
     axes[0, 2].set_title("Momentum Balance Residual Norm")
     axes[0, 2].set_xlabel(r"$|R_{\mathrm{mom,free}}|$")
@@ -392,64 +334,26 @@ def test(model_path: Path | None = None):
     axes[0, 2].grid(True, alpha=0.3)
 
     # Subplot 4: Stress-Strain Response (S11 vs E11)
-    axes[1, 0].plot(
-        E11_gt_traj,
-        S11_gt_traj,
-        color="black",
-        linestyle="--",
-        linewidth=2.0,
-        label=r"Ground Truth / Theoretical",
-    )
-    axes[1, 0].plot(
-        E11_pred_traj,
-        S11_pred_traj,
-        color="red",
-        linestyle="-",
-        marker="o",
-        linewidth=1.5,
-        markersize=4,
-        alpha=0.85,
-        label=r"MeshGraphNet Prediction",
-    )
+    axes[1, 0].plot(E11_gt_traj, S11_gt_traj, color="black", linestyle="--", linewidth=2.0, label=r"Ground Truth")
+    axes[1, 0].plot(E11_pred_traj, S11_pred_traj, color="red", linestyle="-", marker="o", linewidth=1.5, markersize=4, alpha=0.85, label=r"Prediction")
     axes[1, 0].set_title("Constitutive Response ($S_{11}$ vs $E_{11}$)")
     axes[1, 0].set_xlabel(r"Green-Lagrange Strain $E_{11}$ [-]")
-    axes[1, 0].set_ylabel(r"Second Piola-Kirchhoff Stress $S_{11}$ [Pa]")
+    axes[1, 0].set_ylabel(r"2nd Piola-Kirchhoff Stress $S_{11}$ [Pa]")
     axes[1, 0].legend()
     axes[1, 0].grid(True, linestyle="--", alpha=0.3)
 
     # Subplot 5: Tip Stress Trajectory (S11 vs Time)
     t_plot = time_grid.cpu().numpy()
-    axes[1, 1].plot(
-        t_plot,
-        S11_gt_traj,
-        color="black",
-        linestyle="--",
-        linewidth=1.8,
-        label=r"Ground Truth $S_{11}(X=L)$",
-    )
-    axes[1, 1].plot(
-        t_plot,
-        S11_pred_traj,
-        color="red",
-        linestyle="-",
-        linewidth=1.8,
-        label=r"Predicted $S_{11}(X=L)$",
-    )
-    axes[1, 1].set_title("Tip Stress Trajectory ($X = L$)")
+    axes[1, 1].plot(t_plot, S11_gt_traj, color="black", linestyle="--", linewidth=1.8, label=r"Ground Truth $S_{11}$")
+    axes[1, 1].plot(t_plot, S11_pred_traj, color="red", linestyle="-", linewidth=1.8, label=r"Predicted $S_{11}$")
+    axes[1, 1].set_title("Mean Stress Trajectory")
     axes[1, 1].set_xlabel("Time $t$ [s]")
     axes[1, 1].set_ylabel("Stress $S_{11}$ [Pa]")
     axes[1, 1].legend()
     axes[1, 1].grid(True, linestyle="--", alpha=0.3)
 
     # Subplot 6: Relative L2 Error over Time
-    axes[1, 2].plot(
-        t_plot,
-        l2_err_traj,
-        color="green",
-        linestyle="-",
-        linewidth=1.8,
-        label=r"Relative $L_2$ Displacement Error",
-    )
+    axes[1, 2].plot(t_plot, l2_err_traj, color="green", linestyle="-", linewidth=1.8, label=r"Relative $L_2$ Error")
     axes[1, 2].set_title("Displacement Error Trajectory")
     axes[1, 2].set_xlabel("Time $t$ [s]")
     axes[1, 2].set_ylabel("Relative $L_2$ Error")
@@ -472,8 +376,8 @@ if __name__ == "__main__":
             test(model_path=model_file)
     else:
         Tk().withdraw()
-        selected_model = askopenfilename(initialdir=out_dir)
+        selected_model = askopenfilename(initialdir=out_dir, filetypes=[("PyTorch Models", "*.pt")])
         if selected_model:
             selected_model_path = Path(selected_model)
             test(model_path=selected_model_path)
-            animate_deformation(model_path=selected_model_path)
+            # animate_deformation(model_path=selected_model_path) # Decommenta se animate_deformation supporta il 3D

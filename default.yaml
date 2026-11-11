@@ -25,12 +25,12 @@ domain:
 model:
   model_name: "MGN_default"
   type: "standard"
-  node_in_dim: 4      
-  edge_in_dim: 6      
+  node_in_dim: 15      
+  edge_in_dim: 8     
   latent_dim: 64
   hidden_dim: 64
   num_layers: 4
-  output_dim: 2       
+  output_dim: 3       
 
 # ==========================================
 # TRAINING CONFIGURATION
@@ -71,5 +71,5 @@ physics:
   lam: 6.0e5
   beta: 2.0
   rho_0: 1000.0
-  body_force: [0.0, 0.0]
+  body_force: [0.0, 0.0, 0.0]
   sigma_max: 1.5e5

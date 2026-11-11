@@ -27,20 +27,20 @@ domain:
 model:
   model_name: "DEBUG_F_const_3D"
   type: "standard"
-  node_in_dim: 10
-  edge_in_dim: 6     
+  node_in_dim: 15
+  edge_in_dim: 8     
   latent_dim: 8
   hidden_dim: 8
   num_layers: 4
-  output_dim: 2      
+  output_dim: 3      
 
 # ==========================================
 # TRAINING CONFIGURATION
 # ==========================================
 training:
   method: "base"
-  device: "cpu"
-  epochs: 100
+  device: "cuda"
+  epochs: 1000
   warming_epochs: 10
   
   causal_annealing:
@@ -74,7 +74,7 @@ physics:
   lam: 6.0e5
   beta: 2.0
   rho_0: 1000.0
-  body_force: [0.0, 0.0]
+  body_force: [0.0, 0.0, 0.0]
   sigma_max: 1.5e5
   zeta: 0.9
   w: [0.01, 1]

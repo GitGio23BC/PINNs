@@ -10,9 +10,9 @@ def compute_nodal_masses(mesh: Mesh, rho: torch.Tensor) -> torch.Tensor:
         device=mesh.nodes.device,
     )
     element_masses = rho * mesh.elements_volume
-    mass_per_corner = element_masses / 3.0
+    mass_per_corner = element_masses / 4.0
 
-    for i in range(3):
+    for i in range(4):
         nodal_masses.scatter_add_(0, mesh.elements[:, i], mass_per_corner)
 
     return nodal_masses.unsqueeze(-1)

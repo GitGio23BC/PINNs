@@ -297,9 +297,14 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
     for node_type_idx, border_nodes in enumerate(mesh.get_boundary_nodes()):
         raw_node_type[border_nodes] = node_type_idx
 
-    node_type = torch.nn.functional.one_hot(
-        raw_node_type, num_classes=len(mesh.get_boundary_faces())
-    ).float()
+    directions = ('left', 'right', 'bottom', 'top', 'back', 'front')
+    node_type = torch.zeros((mesh.n_nodes, len(directions)), dtype=dtype, device=device)
+    for i, direction in enumerate(directions):
+        node_type[mesh.get_boundary_nodes(direction), i] = 1.0
+
+    #node_type = torch.nn.functional.one_hot(
+    #    raw_node_type, num_classes=len(mesh.get_boundary_faces())
+    #).float()
 
     # Training Loop
     logger.info("Start Hybrid MSG training...")

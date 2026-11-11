@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename
@@ -7,6 +8,8 @@ import numpy as np
 import torch
 from matplotlib import animation
 from matplotlib.animation import FFMpegWriter, PillowWriter
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from src.geometry import create_graph, create_mesh_3D
 from src.loader import generate_inertial_dataset
@@ -18,7 +21,7 @@ def rollout_trajectory(
     model: MeshGraphNet,
     mesh,
     node_type: torch.Tensor,
-    time_grid: torch.Tensor,
+    time_grid: np.ndarray,
     traction_trajectory: torch.Tensor,
     traction_scale: float,
     time_steps: int,
@@ -37,7 +40,8 @@ def rollout_trajectory(
     with torch.no_grad():
         for t_n in range(time_steps):
             trac_feat = torch.zeros((mesh.n_nodes, 3), device=device, dtype=torch.float32)
-            trac_feat[mesh.boundary_nodes["right"]] =traction_trajectory[t_n] / traction_scale
+            trac_feat[mesh.get_boundary_nodes("right")] = traction_trajectory[t_n] / traction_scale
+            
             graph = create_graph(
                 mesh=mesh,
                 world_pos=world_pos,
@@ -46,6 +50,7 @@ def rollout_trajectory(
                 acceleration=acceleration_prev,
                 boundary_traction=trac_feat,
                 device=device,
+                dtype=torch.float32
             )
             u = model(graph).to(dtype=torch.float32)
             u_pred_trajectory.append(u.cpu())
@@ -74,7 +79,7 @@ def animate_deformation(
     output_dir.mkdir(parents=True, exist_ok=True)
     
     if output_filename is None:
-        output_filename = cfg['model']['model_name'] + "_deformation.gif"
+        output_filename = cfg['model']['model_name'] + "_deformation.mp4"
 
     if model_path is None:
         model_path = output_dir / f"{cfg['model']['model_name']}.pt"
@@ -82,25 +87,28 @@ def animate_deformation(
     if not model_path.exists():
         raise FileNotFoundError(f"Missing model file: {model_path}")
 
-    # Mesh
+    # Mesh 3D
     x_min, x_max = cfg["domain"]["x_range"]
     y_min, y_max = cfg["domain"]["y_range"]
-    nx, ny = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"])
+    z_min, z_max = cfg["domain"]["z_range"]
+    nx, ny, nz = int(cfg["domain"]["nx"]), int(cfg["domain"]["ny"]), int(cfg["domain"]["nz"])
 
     mesh = create_mesh_3D(
         width=float(x_max - x_min),
         height=float(y_max - y_min),
+        depth=float(z_max - z_min),
         nx=nx,
         ny=ny,
+        nz=nz,
         device=device,
+        dtype=dtype
     )
 
-    raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
-    raw_node_type[mesh.boundary_nodes["top"]] = 3
-    raw_node_type[mesh.boundary_nodes["bottom"]] = 3
-    raw_node_type[mesh.boundary_nodes["right"]] = 2
-    raw_node_type[mesh.boundary_nodes["left"]] = 1
-    node_type = torch.nn.functional.one_hot(raw_node_type, num_classes=4).float()
+    # Allineamento ai bounday nodes a 6 facce
+    directions = ('left', 'right', 'bottom', 'top', 'back', 'front')
+    node_type = torch.zeros((mesh.n_nodes, len(directions)), dtype=dtype, device=device)
+    for i, direction in enumerate(directions):
+        node_type[mesh.get_boundary_nodes(direction), i] = 1.0
 
     # Data
     data_dir = Path(cfg["data"]["data_dir"])
@@ -124,17 +132,14 @@ def animate_deformation(
     u_exact_traj = dataset["u"].cpu().numpy()
     num_frames = len(time_grid)
 
-    F_ext_traj = np.zeros((num_frames, mesh.n_nodes, 2), dtype=np.float32)
-
-    trac_traj = dataset["trac_ext"].cpu().numpy()
-    right_nodes = mesh.boundary_nodes["right"].cpu().numpy()
-    right_lengths = mesh.get_boundary_areas("right").cpu().numpy()
-
-    if trac_traj.ndim == 3:
-        F_ext_traj[:, right_nodes, :] = trac_traj * right_lengths[None, :, None]
-    elif trac_traj.ndim == 2:
-        F_ext_traj[:, right_nodes, :] = (
-            trac_traj[:, None, :] * right_lengths[None, :, None]
+    right_nodes = mesh.get_boundary_nodes("right").cpu().numpy()
+    traction_traj = dataset["trac_ext"].cpu().numpy()
+    
+    # Broadcast della trazione come in animate_ground_truth
+    if traction_traj.ndim == 2:
+        traction_traj = np.broadcast_to(
+            traction_traj[:, None, :],
+            (len(time_grid), len(right_nodes), 3),
         )
 
     # Model
@@ -156,136 +161,118 @@ def animate_deformation(
         mgn,
         mesh,
         node_type,
-        dataset["time"],
+        time_grid,
         dataset["trac_ext"],
         float(cfg["physics"]["sigma_max"]),
         num_frames,
         device,
     )
 
-    # Geometry bounds & plot setup
+    # Rendering Setup
     nodes_ref = mesh.nodes.cpu().numpy()
-    elements = mesh.elements.cpu().numpy()
+    boundary_faces = torch.cat(list(mesh.boundary_faces.values()), dim=0).cpu().numpy()
 
-    all_x = np.concatenate(
-        [nodes_ref[:, 0] + u_exact_traj[..., 0], nodes_ref[:, 0] + u_pred_traj[..., 0]]
-    )
-    all_y = np.concatenate(
-        [nodes_ref[:, 1] + u_exact_traj[..., 1], nodes_ref[:, 1] + u_pred_traj[..., 1]]
-    )
-    margin_x = (all_x.max() - all_x.min()) * 0.15
-    margin_y = (all_y.max() - all_y.min()) * 0.15
-
-    xlim = (all_x.min() - margin_x, all_x.max() + margin_x)
-    ylim = (all_y.min() - margin_y, all_y.max() + margin_y)
+    # Pre-calcola bounds per entrambe le traiettorie
+    pos_exact = nodes_ref[None, :, :] + u_exact_traj
+    pos_pred = nodes_ref[None, :, :] + u_pred_traj
+    
+    all_pos = np.concatenate([pos_exact, pos_pred], axis=0)
+    bounds_min = all_pos.reshape(-1, 3).min(axis=0)
+    bounds_max = all_pos.reshape(-1, 3).max(axis=0)
+    spans = bounds_max - bounds_min
+    margin = np.maximum(spans * 0.1, max(mesh.width, mesh.height, mesh.depth) * 0.02)
 
     mag_exact = np.linalg.norm(u_exact_traj, axis=-1)
     mag_pred = np.linalg.norm(u_pred_traj, axis=-1)
-    vmax = max(mag_exact.max(), mag_pred.max(), 1e-4)
+    vmax = max(float(mag_exact.max()), float(mag_pred.max()), 1e-4)
+    color_norm = plt.Normalize(vmin=0.0, vmax=vmax)
 
-    fig, (ax_gt, ax_pred) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-    sm = plt.cm.ScalarMappable(cmap="viridis", norm=plt.Normalize(vmin=0.0, vmax=vmax))  # type: ignore
+    # Figure Layout
+    fig = plt.figure(figsize=(18, 8))
+    ax_gt = fig.add_subplot(121, projection="3d")
+    ax_pred = fig.add_subplot(122, projection="3d")
+    
+    scalar_map = plt.cm.ScalarMappable(cmap="viridis", norm=color_norm)
     fig.colorbar(
-        sm,
+        scalar_map,
         ax=[ax_gt, ax_pred],
+        shrink=0.7,
+        pad=0.05,
         orientation="horizontal",
-        fraction=0.05,
-        pad=0.15,
+        fraction=0.04,
         label="Displacement Magnitude ||u|| [m]",
     )
 
     def update(frame: int):
         t_val = float(time_grid[frame])
 
-        f_current = F_ext_traj[frame]
-        f_norm = np.linalg.norm(f_current, axis=-1)
-        active_nodes = f_norm > 1e-8
-
-        # Ground truth plot
-        pos_gt = nodes_ref + u_exact_traj[frame]
+        # === 1. GROUND TRUTH ===
         ax_gt.clear()
-        ax_gt.set_title(f"Ground Truth (t = {t_val:.3f} s)")
-        ax_gt.tripcolor(
-            pos_gt[:, 0],
-            pos_gt[:, 1],
-            elements,
-            mag_exact[frame],
-            cmap="viridis",
-            vmin=0.0,
-            vmax=vmax,
-            shading="gouraud",
+        pos_gt_current = pos_exact[frame]
+        face_mag_gt = mag_exact[frame][boundary_faces].mean(axis=1)
+        
+        surf_gt = Poly3DCollection(
+            pos_gt_current[boundary_faces],
+            facecolors=plt.cm.viridis(color_norm(face_mag_gt)),
+            edgecolors=(0.1, 0.1, 0.1, 0.35),
+            linewidths=0.25,
         )
-        ax_gt.triplot(
-            pos_gt[:, 0],
-            pos_gt[:, 1],
-            elements,
-            color="black",
-            alpha=0.3,
-            linewidth=0.8,
-        )
+        ax_gt.add_collection3d(surf_gt)
 
+        # Vector field (Traction) su GT
+        traction_current = traction_traj[frame]
+        traction_norm = np.linalg.norm(traction_current, axis=-1)
+        max_traction = float(traction_norm.max()) if traction_norm.size else 0.0
+        active_nodes = traction_norm > max(max_traction * 1e-6, 1e-8)
+        
         if np.any(active_nodes):
+            arrow_length = 0.18 * max(mesh.width, mesh.height, mesh.depth)
+            arrows = traction_current[active_nodes] * (arrow_length / max_traction)
+            arrow_origins = pos_gt_current[right_nodes[active_nodes]]
             ax_gt.quiver(
-                pos_gt[active_nodes, 0],
-                pos_gt[active_nodes, 1],
-                f_current[active_nodes, 0],
-                f_current[active_nodes, 1],
-                color="red",
-                scale=None,
-                width=0.005,
-                label=r"Applied $F_{ext}$",
+                arrow_origins[:, 0], arrow_origins[:, 1], arrow_origins[:, 2],
+                arrows[:, 0], arrows[:, 1], arrows[:, 2],
+                color="red", arrow_length_ratio=0.2,
             )
-            ax_gt.legend(loc="upper left")
 
-        ax_gt.set_xlim(xlim)
-        ax_gt.set_ylim(ylim)
-        ax_gt.set_aspect("equal")
-        ax_gt.grid(True, linestyle="--", alpha=0.3)
-        ax_gt.set_xlabel("X [m]")
-        ax_gt.set_ylabel("Y [m]")
+        ax_gt.set_title(f"Ground Truth (t = {t_val:.3f} s)")
 
-        # Prediction plot
-        pos_pred = nodes_ref + u_pred_traj[frame]
+        # === 2. MESH GRAPH NET PREDICTION ===
         ax_pred.clear()
-        ax_pred.set_title(f"MeshGraphNet PINN (t = {t_val:.3f} s)")
-        ax_pred.tripcolor(
-            pos_pred[:, 0],
-            pos_pred[:, 1],
-            elements,
-            mag_pred[frame],
-            cmap="viridis",
-            vmin=0.0,
-            vmax=vmax,
-            shading="gouraud",
-        )
-        ax_pred.triplot(
-            pos_pred[:, 0],
-            pos_pred[:, 1],
-            elements,
-            color="black",
-            alpha=0.3,
-            linewidth=0.8,
-        )
+        pos_pred_current = pos_pred[frame]
+        face_mag_pred = mag_pred[frame][boundary_faces].mean(axis=1)
 
+        surf_pred = Poly3DCollection(
+            pos_pred_current[boundary_faces],
+            facecolors=plt.cm.viridis(color_norm(face_mag_pred)),
+            edgecolors=(0.1, 0.1, 0.1, 0.35),
+            linewidths=0.25,
+        )
+        ax_pred.add_collection3d(surf_pred)
+
+        # Vector field (Traction) su Prediction
         if np.any(active_nodes):
+            arrow_origins_pred = pos_pred_current[right_nodes[active_nodes]]
             ax_pred.quiver(
-                pos_pred[active_nodes, 0],
-                pos_pred[active_nodes, 1],
-                f_current[active_nodes, 0],
-                f_current[active_nodes, 1],
-                color="red",
-                scale=None,
-                width=0.005,
-                label=r"Applied $F_{ext}$",
+                arrow_origins_pred[:, 0], arrow_origins_pred[:, 1], arrow_origins_pred[:, 2],
+                arrows[:, 0], arrows[:, 1], arrows[:, 2],
+                color="red", arrow_length_ratio=0.2,
             )
-            ax_pred.legend(loc="upper left")
+            ax_pred.text2D(0.02, 0.96, "Red arrows: applied traction", transform=ax_pred.transAxes)
 
-        ax_pred.set_xlim(xlim)
-        ax_pred.set_ylim(ylim)
-        ax_pred.set_aspect("equal")
-        ax_pred.grid(True, linestyle="--", alpha=0.3)
-        ax_pred.set_xlabel("X [m]")
+        ax_pred.set_title(f"MeshGraphNet PINN (t = {t_val:.3f} s)")
+
+        # === IMPOSTAZIONI COMUNI (Da rieseguire dopo ogni .clear()) ===
+        for ax in (ax_gt, ax_pred):
+            ax.set_xlim(bounds_min[0] - margin[0], bounds_max[0] + margin[0])
+            ax.set_ylim(bounds_min[1] - margin[1], bounds_max[1] + margin[1])
+            ax.set_zlim(bounds_min[2] - margin[2], bounds_max[2] + margin[2])
+            ax.set_box_aspect((mesh.width, mesh.height, mesh.depth))
+            ax.set_xlabel("X [m]")
+            ax.set_ylabel("Y [m]")
+            ax.set_zlabel("Z [m]")
+            ax.view_init(elev=25, azim=-55)
+            ax.grid(True, linestyle="--", alpha=0.3)
 
         return []
 
@@ -298,14 +285,12 @@ def animate_deformation(
         writer = FFMpegWriter(fps=fps)
         save_target = output_dir / output_filename
     else:
-        print(
-            "FFmpeg not found on system. Falling back to PillowWriter (.gif output)..."
-        )
+        print("FFmpeg not found on system. Falling back to PillowWriter (.gif output)...")
         writer = PillowWriter(fps=fps)
         save_target = output_dir / f"{Path(output_filename).stem}.gif"
 
     anim.save(save_target, writer=writer)
-    plt.close()
+    plt.close(fig)
     print(f"Animation successfully exported to: {save_target}")
 
 

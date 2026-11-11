@@ -36,7 +36,10 @@ def neumann_loss(
     t_pred = torch.einsum("fij,fj->fi", P_boundary, n_normal)
     tot_area = face_areas.sum()
     
-    return mse(t_pred, trac_ext) * (face_areas / tot_area * trac_scale) ** 2
+    error_per_face = ((t_pred - trac_ext) / trac_scale).square().mean(dim=-1)
+    area_weights = face_areas / tot_area
+
+    return torch.sum(area_weights * error_per_face)
 
 
 def pako_loss(
