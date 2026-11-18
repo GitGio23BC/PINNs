@@ -32,7 +32,6 @@ def rollout_trajectory(
     u_prev2 = torch.zeros_like(u_prev)
     dt = float((time_grid[-1] - time_grid[0]) / max(time_steps - 1, 1))
     velocity_prev = torch.zeros_like(u_prev)
-    acceleration_prev = torch.zeros_like(u_prev)
     world_pos = mesh.nodes.clone()
 
     u_pred_trajectory = []
@@ -47,7 +46,6 @@ def rollout_trajectory(
                 world_pos=world_pos,
                 node_type=node_type,
                 velocity=velocity_prev,
-                acceleration=acceleration_prev,
                 boundary_traction=trac_feat,
                 device=device,
                 dtype=torch.float32
@@ -57,9 +55,7 @@ def rollout_trajectory(
 
             u_prev2 = u_prev.detach().clone()
             u_prev = u.detach().clone()
-            u_tt = (u - 2.0 * u_prev + u_prev2) / (dt**2)
             velocity_prev = ((u_prev - u_prev2) / dt).detach()
-            acceleration_prev = u_tt.detach()
             world_pos = (mesh.nodes + u_prev).detach()
 
     return torch.stack(u_pred_trajectory, dim=0).numpy()

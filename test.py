@@ -128,7 +128,7 @@ def test(model_path: Path | None = None):
     rho = torch.tensor(data=[p_cfg["rho_0"]], device=device, dtype=dtype)
     
     zeta = float(p_cfg["zeta"])
-    w_min, w_max = [float(w) for w in p_cfg["w"]]
+    w_min, w_max = [2*torch.pi*float(f) for f in p_cfg["f"]]
     alpha_rayleigh = 2.0 * zeta * (w_max + w_min)
     beta_rayleigh = 2.0 * zeta * (w_max * w_min) / (w_max + w_min)
 
@@ -163,7 +163,6 @@ def test(model_path: Path | None = None):
             world_pos=world_pos,
             node_type=node_type,
             velocity=velocity_prev,
-            acceleration=acceleration_prev,
             boundary_traction=trac_feat,
             device=device,
             dtype=dtype,
@@ -174,16 +173,18 @@ def test(model_path: Path | None = None):
             u.requires_grad_(True)
 
             # Acceleration & Velocity
-            u_t = (u - u_prev) / dt
-            u_tt = (u - 2.0 * u_prev + u_prev2) / (dt**2)
+            u_t = 2/dt * (u - u_prev) - velocity_prev
+            u_tt = (
+                4/dt**2 * (u - u_prev) - 4/dt * velocity_prev - acceleration_prev
+            )
 
             # Kinematics & Stress (Prediction)
             grad_u = stencil_grad(u, mesh.elements, dN_dX)
             kin = Kinematics(grad_u)
             ogden = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin)
             psi = ogden.get_psi()
-            S = ogden.get_S()
-            P = kin.compute_P(S)
+            P = ogden.get_P()
+            S = torch.linalg.solve(kin.F, P)
 
             state = BodyState(
                 b=b,
@@ -217,7 +218,7 @@ def test(model_path: Path | None = None):
             kin_exact = Kinematics(grad_u=grad_u_exact)
             ogden_exact = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin_exact)
             ogden_exact.get_psi()
-            S_exact = ogden_exact.get_S()
+            S_exact = torch.linalg.solve(kin_exact.F, ogden_exact.get_P())
 
         # Track E11 and S11 for stress-strain curves
         e11_pred = kin.E[eval_elems, 0, 0].mean().item()
@@ -237,7 +238,7 @@ def test(model_path: Path | None = None):
         # Update Variables
         u_prev2 = u_prev.detach().clone()
         u_prev = u.detach().clone()
-        velocity_prev = ((u_prev - u_prev2) / dt).detach()
+        velocity_prev = u_t.detach()
         acceleration_prev = u_tt.detach().clone()
         world_pos = (mesh.nodes + u_prev).detach()
 

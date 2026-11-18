@@ -6,7 +6,7 @@ output_dir: "./output"
 bulk: false
 
 data:
-  dataset_name: "F_const_3D.pt"
+  dataset_name: "F_delayed_step_3D.pt"
   data_dir: "./data/synt"
   batch_size: 1
   num_workers: 0
@@ -25,9 +25,9 @@ domain:
 # MODEL CONFIGURATION
 # ==========================================
 model:
-  model_name: "DEBUG_F_const_3D"
+  model_name: "DEBUG_F_delayed_step_3D_18.11_2"
   type: "standard"
-  node_in_dim: 15
+  node_in_dim: 12
   edge_in_dim: 8     
   latent_dim: 8
   hidden_dim: 8
@@ -40,18 +40,19 @@ model:
 training:
   method: "base"
   device: "cuda"
-  epochs: 1000
+  epochs: 100
   warming_epochs: 10
   
   causal_annealing:
+    enabled: false
     eps_init: 1e-4
-    eps_final: 10.0
+    eps_final: 1e-3
 
   loss_weights:
     lambda_data: 1.0
-    lambda_dirichlet: 10.0
-    lambda_neumann: 100.0
-    lambda_pako: 10.0
+    lambda_dirichlet: 1.0
+    lambda_neumann: 1.0
+    lambda_pako: 0.1
 
 # ==========================================
 # OPTIMIZER
@@ -77,4 +78,4 @@ physics:
   body_force: [0.0, 0.0, 0.0]
   sigma_max: 1.5e5
   zeta: 0.9
-  w: [0.01, 1]
+  f: [0.01, 1]

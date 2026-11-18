@@ -33,6 +33,7 @@ def compute_external_force(
     mesh: Mesh,
     sigma_max: float,
     trac_type: str,
+    t0: float = 0.0
 ) -> tuple[torch.Tensor, torch.Tensor]:
     dtype = mesh.nodes.dtype
     device = mesh.nodes.device
@@ -40,6 +41,7 @@ def compute_external_force(
 
     # Magnitude (N/m)
     time_value = t_n.to(device=device, dtype=dtype)
+    tau = time_value - t0
     if trac_type == "const":
         traction = torch.tensor([sigma_max, 0, 0], dtype=dtype, device=device).to(
             dtype=dtype, device=device
@@ -68,6 +70,12 @@ def compute_external_force(
         traction = (
             torch.tensor([sigma_max, 0, 0], dtype=dtype, device=device)
             * torch.sin(2 * torch.pi * time_value / T)
+        ).to(dtype=dtype, device=device)
+    elif trac_type == "delayed_step":
+        delay = T / 4
+        traction = (
+            torch.tensor([sigma_max, 0, 0], dtype=dtype, device=device)
+            * (tau >= delay)
         ).to(dtype=dtype, device=device)
     else:
         traction = torch.tensor([0, 0, 0], dtype=dtype, device=device)
@@ -152,7 +160,7 @@ def generate_inertial_dataset(
     ################### TO SEARCH
     # https://mechcodex.com/reference/damping-ratios-typical
     ζ = float(phys_cfg["zeta"])
-    ω_min, ω_max = [float(w) for w in phys_cfg["w"]]
+    ω_min, ω_max = [2.0 * torch.pi * float(f) for f in phys_cfg["f"]]
     ##################
     alpha_rayleigh = 2.0 * ζ * (ω_max + ω_min)
     beta_rayleigh = 2.0 * ζ * (ω_max * ω_min) / (ω_max + ω_min)
@@ -241,12 +249,14 @@ def generate_inertial_dataset(
 
     for n in range(n_steps):  # Newton-Raphson loop
         t_n = t_eval[n]
+        duration = float(t_final - t0)
         F_ext, trac_ext = compute_external_force(
             t_n,
-            t_final,
+            duration,
             mesh,
             sigma_max,
             trac_type=trac_type,
+            t0=float(t0),
         )
 
         if verbose:

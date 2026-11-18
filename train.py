@@ -271,7 +271,7 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
     )
 
     zeta = float(p_cfg["zeta"])
-    w_min, w_max = [float(w) for w in p_cfg["w"]]
+    w_min, w_max = [2*torch.pi*float(f) for f in p_cfg["f"]]
     alpha_rayleigh = 2.0 * zeta * (w_max + w_min)
     beta_rayleigh = 2.0 * zeta * (w_max * w_min) / (w_max + w_min)
 
@@ -282,6 +282,15 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
     causal_cfg = t_cfg["causal_annealing"]
     eps_init = float(causal_cfg["eps_init"])
     eps_final = float(causal_cfg["eps_final"])
+    causal_annealing_enabled = bool(causal_cfg.get("enabled", True))
+
+    configured_loss_weights = t_cfg.get("loss_weights", {})
+    loss_enable = {
+        "lambda_data": float(configured_loss_weights.get("lambda_data", 1.0)),
+        "lambda_dirichlet": float(configured_loss_weights.get("lambda_dirichlet", 0.0)),
+        "lambda_neumann": float(configured_loss_weights.get("lambda_neumann", 0.0)),
+        "lambda_pako": float(configured_loss_weights.get("lambda_pako", 0.0)),
+    }
 
     loss_weights = {
         "lambda_data": 1.0,
@@ -311,23 +320,23 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
 
     for epoch in tqdm(range(1, epochs + 1), desc="Epochs"):
         # Causal annealing
-        eps = (
-            eps_init * ((eps_final / eps_init) ** ((epoch - 1) / (epochs - 1)))
-            if epoch > warming_epochs
-            else eps_init
-        )
+        if not causal_annealing_enabled:
+            eps = 0.0
+        elif epoch > warming_epochs:
+            eps = eps_init * ((eps_final / eps_init) ** ((epoch - 1) / (epochs - 1)))
+        else:
+            eps = eps_init
 
         if epoch == warming_epochs:
             temp_metric = metrics.copy()
             loss_weights = {
-                "lambda_data": 1 / temp_metric["l_data"],
-                "lambda_dirichlet": 1 / temp_metric["l_dirichlet"],
-                "lambda_neumann": 1 / temp_metric["l_neumann"],
-                "lambda_pako": 1 / temp_metric["l_pako"],
+                "lambda_data": (1 / temp_metric["l_data"])*loss_enable["lambda_data"],
+                "lambda_dirichlet": (1 / temp_metric["l_dirichlet"])*loss_enable["lambda_dirichlet"],
+                "lambda_neumann": (1 / temp_metric["l_neumann"])*loss_enable["lambda_neumann"],
+                "lambda_pako": (1 / temp_metric["l_pako"])*loss_enable["lambda_pako"],
             }
         # Initialisation
         u_prev = torch.zeros((mesh.n_nodes, 3), dtype=dtype, device=device)
-        u_prev2 = torch.zeros((mesh.n_nodes, 3), dtype=dtype, device=device)
         velocity_prev = torch.zeros_like(u_prev)
         acceleration_prev = torch.zeros_like(u_prev)
 
@@ -352,27 +361,26 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
                 world_pos=world_pos,
                 node_type=node_type,
                 velocity=velocity_feat,
-                acceleration=acceleration_prev,
                 boundary_traction=trac_feat,
                 device=device,
                 dtype=dtype,
             )
 
             # Get the prediciton
-            u = mgn(graph)
-            u = u.to(dtype=dtype)
+            u = mgn(graph).to(dtype=dtype)
 
             # Get dynamics
-            u_t = (u - u_prev) / dt
-            u_tt = (u - 2.0 * u_prev + u_prev2) / (dt**2)
+            u_t = 2/dt * (u - u_prev) - velocity_prev
+            u_tt = (
+                4/dt**2 * (u - u_prev) - 4/dt * velocity_prev - acceleration_prev
+            )
 
             # Get kinematics
             grad_u = stencil_grad(u, mesh.elements, dN_dX)
             kin = Kinematics(grad_u)
             ogden = Ogden(mus=mus, alphas=alphas, beta=beta, lam=lam, kin=kin)
             psi = ogden.get_psi()
-            S = ogden.get_S()
-            P = kin.compute_P(S)
+            P = ogden.get_P()
 
             state = BodyState(
                 u=u,
@@ -413,8 +421,8 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
             l_prev_physics += l_physics.detach().to(dtype=dtype).div(t_step + 1)
             u_prev2 = u_prev.detach().clone()
             u_prev = u.detach().clone()
-            velocity_prev = ((u_prev - u_prev2) / dt).detach()
-            acceleration_prev = u_tt.detach().clone()
+            velocity_prev = u_t.detach()
+            acceleration_prev = u_tt.detach()
             world_pos = (mesh.nodes + u_prev).detach()
 
             epoch_metrics.append({"causal_w": causal_w, **metrics})

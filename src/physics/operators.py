@@ -30,7 +30,7 @@ def compute_internal_nodal_forces(
         dtype=P.dtype,
         device=P.device,
     )
-    for i in range(3):
+    for i in range(4):
         F_int.scatter_add_(
             0,
             mesh.elements[:, i].unsqueeze(-1).expand(-1, 3),

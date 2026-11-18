@@ -66,7 +66,6 @@ def create_graph(
     node_type: torch.Tensor,
     world_pos: torch.Tensor,
     velocity: torch.Tensor,
-    acceleration: torch.Tensor | None = None,
     boundary_traction: torch.Tensor | None = None,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float32,
@@ -93,14 +92,11 @@ def create_graph(
     velocity_feature = torch.as_tensor(
             velocity, device=device, dtype=dtype
         )
-    acceleration_feature = torch.as_tensor(
-                acceleration, device=device, dtype=dtype
-        )
     traction_feature = torch.as_tensor(
             boundary_traction, device=device, dtype=dtype
         )
     node_features = torch.cat(
-        [node_type, velocity_feature, acceleration_feature, traction_feature], dim=-1
+        [node_type, velocity_feature, traction_feature], dim=-1
     )
 
     edge_features = torch.cat([u_rel, u_dist, x_rel, x_dist], dim=-1)

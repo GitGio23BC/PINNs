@@ -13,8 +13,13 @@ class Kinematics:
         self.J = torch.linalg.det(self.F_base)
         self.F = self.F_base
 
-    def compute_P(self, S: torch.Tensor) -> torch.Tensor:
-        return self.F @ S
+    #def compute_P(self: torch.Tensor) -> torch.Tensor:
+    #    return torch.autograd.grad(
+    #        outputs=self.psi.sum(),  # type: ignore
+    #        inputs=self.kin.F,
+    #        create_graph=True,
+    #        retain_graph=True,
+    #    )[0]
 
     def compute_tau(self, S: torch.Tensor) -> torch.Tensor:
         return self.F @ S @ self.F.mT
@@ -126,6 +131,14 @@ class Ogden:
             retain_graph=True,
         )[0]
         return S
+
+    def get_P(self) -> torch.Tensor:
+        return torch.autograd.grad(
+            outputs=self.psi.sum(),  # type: ignore
+            inputs=self.kin.F,
+            create_graph=True,
+            retain_graph=True,
+        )[0]
 
     def hills_constitutive_inequality(
         self,

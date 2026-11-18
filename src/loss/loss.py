@@ -14,8 +14,8 @@ def data_loss(
     u_scale: torch.Tensor | float,
     psi_scale: torch.Tensor | float,
 ) -> torch.Tensor:
-    l_u = mse(u_pred, u_exact) / u_scale
-    l_psi = mse(psi_pred, psi_exact) / psi_scale
+    l_u = (mse(u_pred, u_exact) / u_scale)
+    l_psi = (mse(psi_pred, psi_exact) / psi_scale)*0.5
     return l_u + l_psi
 
 
