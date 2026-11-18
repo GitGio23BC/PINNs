@@ -293,12 +293,24 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
     epochs = int(t_cfg["epochs"])
     warming_epochs = int(t_cfg["warming_epochs"])
 
+    node_type_groups = (
+        mesh.get_boundary_nodes("left"),
+        mesh.get_boundary_nodes("right"),
+    )
+    node_type_dim = int(model_cfg["node_in_dim"]) - 3 * mesh.nodes.shape[-1]
+    if node_type_dim != len(node_type_groups) + 1:
+        raise ValueError(
+            "node_in_dim must allow one node-type feature for each node group "
+            "plus the default group, in addition to velocity, acceleration, "
+            "and traction features."
+        )
+
     raw_node_type = torch.zeros(mesh.n_nodes, dtype=torch.long, device=device)
-    for node_type_idx, border_nodes in enumerate(mesh.get_boundary_nodes()):
-        raw_node_type[border_nodes] = node_type_idx
+    for node_type_idx, nodes in enumerate(node_type_groups, start=1):
+        raw_node_type[nodes] = node_type_idx
 
     node_type = torch.nn.functional.one_hot(
-        raw_node_type, num_classes=len(mesh.get_boundary_faces())
+        raw_node_type, num_classes=node_type_dim
     ).float()
 
     # Training Loop
@@ -398,6 +410,7 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
             )
 
             weighted_loss = causal_w * l_step
+            weighted_loss = weighted_loss.mean()
             total_epoch_loss += weighted_loss.detach().to(dtype=dtype)
 
             # The constitutive stress is obtained with autograd.grad(create_graph=True).
@@ -405,7 +418,7 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
             weighted_loss.backward()
 
             # Update rollout prediction terms
-            l_prev_physics += l_physics.detach().to(dtype=dtype).div(t_step + 1)
+            l_prev_physics += l_physics.mean().detach().to(dtype=dtype).div(t_step + 1)
             u_prev2 = u_prev.detach().clone()
             u_prev = u.detach().clone()
             velocity_prev = ((u_prev - u_prev2) / dt).detach()
@@ -430,7 +443,7 @@ def train(overrides: dict | None = None, dtype=torch.float32) -> Path:
 
         logged_metrics = torch.stack(
             [
-                torch.stack([step_data[name] for step_data in epoch_metrics])
+                torch.stack([step_data[name].mean() for step_data in epoch_metrics])
                 for name in metric_names
             ]
         ).cpu()

@@ -61,7 +61,7 @@ def test(model_path: Path | None = None):
         raw_node_type[border_nodes] = node_type_idx
 
     node_type = torch.nn.functional.one_hot(
-        raw_node_type, num_classes=len(mesh.get_boundary_faces())
+        raw_node_type, num_classes=8
     ).float()
 
     # Data
@@ -97,13 +97,13 @@ def test(model_path: Path | None = None):
     time_grid = data_loader.time
     trac_scale = float(cfg["physics"]["sigma_max"])
     force_reference = torch.zeros(
-        size=(mesh.n_nodes, 2),
+        size=(mesh.n_nodes, 3),
         dtype=dtype,
         device=device,
     )
     force_reference[mesh.get_boundary_faces("right"), 0] = (
         trac_scale * mesh.get_boundary_areas("right")
-    )
+    ).unsqueeze(-1)
     force_scale_free = torch.mean(
         input=force_reference.reshape(-1)[mesh.free_dofs] ** 2
     ).clamp_min(1e-8)
